@@ -79,7 +79,14 @@ curl -s -o /dev/null -w 'https://track.shotline.in/app/: %{http_code}\n' https:/
 curl -s -o /dev/null -w 'shotline.in still: %{http_code}\n' https://shotline.in/ || true
 '''
 script = script.replace('__ID__', os.environ['ID']).replace('__SEC__', os.environ['SEC']).replace('__EMAIL__', os.environ['EMAIL']).replace('__NGINX__', nginx)
-json.dump({'commands': [script]}, open(sys.argv[1], 'w'))
+# SSM runs commands with /bin/sh (dash), which lacks pipefail; hand the script
+# to bash via a private temp file (not stdin, which pnpm etc. could swallow).
+wrapped = (
+    'f=$(mktemp)\n'
+    "cat > \"$f\" <<'MAILTRACK_SCRIPT_EOF'\n" + script + '\nMAILTRACK_SCRIPT_EOF\n'
+    'bash "$f"; rc=$?; rm -f "$f"; exit $rc\n'
+)
+json.dump({'commands': [wrapped]}, open(sys.argv[1], 'w'))
 PYEOF
 
 CMD=$(aws ssm send-command --region "$REGION" --instance-ids "$INSTANCE" \
