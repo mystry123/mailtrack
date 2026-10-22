@@ -63,6 +63,8 @@ const messageSchema = new Schema(
     gmailThreadId: String,
     sentAt: { type: Date, required: true },
     stats: { type: statsSchema, default: () => ({}) },
+    // Last time the Chrome extension saw this email open in your own Gmail.
+    selfSeenAt: Date,
     archived: { type: Boolean, default: false },
   },
   { timestamps: true },

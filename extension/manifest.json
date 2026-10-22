@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Mailtrack: ignore my own opens",
+  "version": "1.0.0",
+  "description": "Stops your own Gmail views of tracked emails from counting as opens on track.shotline.in.",
+  "host_permissions": ["https://track.shotline.in/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://mail.google.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

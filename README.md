@@ -21,7 +21,7 @@ Every hit is stored as an event with a `signal`, and only `real` counts:
 
 Gmail loads images through its proxy, so a Gmail open is real but has no location, and repeat opens are often cached. Clicks are the strong signal. Any event can be flipped in the dashboard ("That was me" / "Count it").
 
-Viewing your own Sent copy later still counts as an open, because it is indistinguishable from the recipient's Gmail. Use "That was me".
+Viewing your own Sent copy goes through the same Gmail image proxy as the recipient's open, so the server can't tell them apart. The Chrome extension in `extension/` fixes that for desktop Chrome: it blanks the pixel in your Gmail and reports `POST /x/seen`, and opens within 2 minutes of that count as "You". Gmail phone app views still count; use "That was me". Fetches from Google's IP ranges without the GoogleImageProxy user agent are Google scanning the message on delivery, and are ignored.
 
 ## Develop
 

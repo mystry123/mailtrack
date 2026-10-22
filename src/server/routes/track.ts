@@ -1,4 +1,4 @@
-import { Router, type Request } from 'express';
+import express, { Router, type Request } from 'express';
 import rateLimit from 'express-rate-limit';
 import geoip from 'geoip-lite';
 import { classify } from '../classify.js';
@@ -15,6 +15,9 @@ const PIXEL = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBR
 
 const TOKEN_RE = /^[A-Za-z0-9]{8,32}$/;
 
+// How long after the extension reports you viewing an email its opens count as yours.
+const SELF_VIEW_MS = 2 * 60_000;
+
 async function record(req: Request, message: Message, type: 'open' | 'click', linkToken?: string): Promise<void> {
   const now = new Date();
   const ua = req.get('user-agent') ?? '';
@@ -27,6 +30,7 @@ async function record(req: Request, message: Message, type: 'open' | 'click', li
     method: req.method,
     acceptLanguage: req.get('accept-language'),
     selfCookie: req.cookies?.[SELF_COOKIE] === '1',
+    selfViewing: !!message.selfSeenAt && now.getTime() - new Date(message.selfSeenAt).getTime() < SELF_VIEW_MS,
     sentAt: message.sentAt,
     now,
     graceSec: env.SELF_OPEN_GRACE_SEC,
@@ -106,4 +110,25 @@ trackRouter.get('/l/:token', limiter, async (req, res, next) => {
   res.redirect(302, link.url);
 
   record(req, message, 'click', token).catch((err) => logger.error({ err }, 'click tracking failed'));
+});
+
+// From the Chrome extension: you have this email open in your own Gmail. Opens
+// in the window around it are yours. Unauthenticated on purpose (the extension
+// has no session); the worst a forged call can do is hide one email's opens.
+trackRouter.post('/x/seen', limiter, express.json({ limit: '1kb' }), async (req, res, next) => {
+  const token = String(req.body?.token ?? '');
+  res.status(204).end();
+  if (!TOKEN_RE.test(token)) return;
+  try {
+    const message = await MessageModel.findOneAndUpdate({ token }, { selfSeenAt: new Date() }).lean<Message>();
+    if (!message) return;
+    const since = new Date(Date.now() - SELF_VIEW_MS);
+    const r = await EventModel.updateMany(
+      { messageId: message._id, type: 'open', at: { $gte: since }, signal: { $ne: 'self' }, manual: false },
+      { signal: 'self', reason: 'you were viewing it in Gmail (extension)' },
+    );
+    if (r.modifiedCount) await recomputeStats(message._id);
+  } catch (err) {
+    next(err);
+  }
 });

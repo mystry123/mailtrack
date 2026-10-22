@@ -50,6 +50,17 @@ describe('classify', () => {
     expect(classify(ctx({ type: 'click', selfCookie: true })).signal).toBe('self');
   });
 
+  it('flags Google delivery scans but not Gmail proxy opens', () => {
+    expect(classify(ctx({ ip: '72.14.199.232' }))).toMatchObject({ signal: 'bot' });
+    const proxied = 'Mozilla/5.0 (Windows NT 5.1; rv:11.0) Gecko Firefox/11.0 (via ggpht.com GoogleImageProxy)';
+    expect(classify(ctx({ ip: '66.249.84.160', ua: proxied }))).toMatchObject({ source: 'gmail', signal: 'real' });
+  });
+
+  it('treats opens while the extension sees you viewing as self', () => {
+    expect(classify(ctx({ selfViewing: true })).signal).toBe('self');
+    expect(classify(ctx({ type: 'click', selfViewing: true })).signal).toBe('real');
+  });
+
   it('does not apply the send-time window to standalone links', () => {
     const r = classify(ctx({ type: 'click', kind: 'link', now: new Date(sentAt.getTime() + 3_000) }));
     expect(r.signal).toBe('real');
