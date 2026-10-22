@@ -132,6 +132,37 @@ function Weekly({ started, goal }: { started: string[]; goal: number }) {
   );
 }
 
+// Reply rate per item (template, link, subject), with how many sent.
+function RateBars({ rows }: { rows: { label: string; sent: number; replied: number; extra?: string }[] }) {
+  const t = useTip();
+  return (
+    <div className="chart" ref={t.box}>
+      {rows.map((r) => (
+        <div key={r.label} className="hbar-row">
+          <span className="hbar-label" title={r.label}>
+            {r.label}
+          </span>
+          <span className="hbar-track">
+            <span
+              className="hbar"
+              tabIndex={0}
+              style={{ width: `${pct(r.replied, r.sent)}%` }}
+              onMouseEnter={(e) => t.show(e, `${r.replied} of ${r.sent} replied${r.extra ? ` · ${r.extra}` : ''}`)}
+              onFocus={(e) => t.show(e, `${r.replied} of ${r.sent} replied`)}
+              onMouseLeave={t.hide}
+              onBlur={t.hide}
+            />
+          </span>
+          <span className="hbar-value">
+            {pct(r.replied, r.sent)}% <span className="muted">of {r.sent}</span>
+          </span>
+        </div>
+      ))}
+      {t.node}
+    </div>
+  );
+}
+
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 function Heatmap({ events }: { events: Insights['engagement'] }) {
@@ -218,7 +249,7 @@ export function InsightsView() {
         </div>
       ) : (
         <>
-          <div className="kpis five">
+          <div className="kpis six">
             <div className="kpi">
               <div className="kpi-n">{e.sent}</div>
               <div className="kpi-l">Emails sent</div>
@@ -239,6 +270,10 @@ export function InsightsView() {
               <div className="kpi-n">{e.avgReplyDays === null ? '—' : `${e.avgReplyDays.toFixed(1)}d`}</div>
               <div className="kpi-l">Avg. time to reply</div>
             </div>
+            <div className="kpi">
+              <div className="kpi-n">{data.sequences.replies}</div>
+              <div className="kpi-l">Replies to automatic follow-ups ({data.sequences.sent} sent)</div>
+            </div>
           </div>
 
           <div className="columns">
@@ -251,6 +286,30 @@ export function InsightsView() {
                   withdrawn
                 </p>
               </section>
+              {(data.byTemplate.length > 0 || data.byLink.length > 0 || data.bySubject.length > 0) && (
+                <section className="card">
+                  <h2>What gets replies</h2>
+                  {data.byTemplate.length > 0 && (
+                    <>
+                      <div className="eyebrow chart-label">By template</div>
+                      <RateBars rows={data.byTemplate.map((t) => ({ label: t.name, sent: t.sent, replied: t.replied }))} />
+                    </>
+                  )}
+                  {data.byLink.length > 0 && (
+                    <>
+                      <div className="eyebrow chart-label">By resume version / link</div>
+                      <RateBars rows={data.byLink.map((l) => ({ label: l.label, sent: l.sent, replied: l.replied, extra: `${l.linkClicks} clicks on it` }))} />
+                    </>
+                  )}
+                  {data.bySubject.length > 0 && (
+                    <>
+                      <div className="eyebrow chart-label">By subject line (used 2+ times)</div>
+                      <RateBars rows={data.bySubject.map((s) => ({ label: s.subject, sent: s.sent, replied: s.replied }))} />
+                    </>
+                  )}
+                  <p className="muted small">Counts a whole thread as replied if any email in it got a reply. Add resume versions as saved links in Settings to compare them.</p>
+                </section>
+              )}
               <section className="card">
                 <h2>Reply rate by source</h2>
                 {data.bySource.length ? <BySource data={data.bySource} /> : <p className="muted small">Set a source on your applications to compare channels.</p>}

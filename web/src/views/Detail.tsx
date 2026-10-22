@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { api, type Application, type Message, type Signal, type TrackEvent } from '../api';
+import { api, type Application, type Me, type Message, type Signal, type TrackEvent } from '../api';
+import { SequenceCard } from './SequenceCard';
 import { AppPicker, Logo, StageBadge, Toast, useApi, type PickedApp } from '../components';
 import { ago, place, SIGNAL_LABEL, SOURCE_LABEL, STATUS_LABEL, statusOf, when } from '../format';
 import { Icon } from '../icons';
@@ -63,6 +64,7 @@ function LinkToCompany({ message, onLinked }: { message: Message; onLinked: (com
 
 export function Detail({ id }: { id: string }) {
   const { data, error, reload } = useApi<Data>(`/api/messages/${id}`, 15_000);
+  const me = useApi<Me>('/api/me').data;
   const [showAll, setShowAll] = useState(false);
   const [toast, setToast] = useState('');
   const [busy, setBusy] = useState(false);
@@ -220,6 +222,7 @@ export function Detail({ id }: { id: string }) {
                         {place(e) && <span className="muted"> · {place(e)}</span>}
                         {e.type !== 'reply' && <span className="muted"> · {SOURCE_LABEL[e.source] ?? e.source}</span>}
                       </div>
+                      {e.type === 'reply' && e.summary && <div className="reply-summary">“{e.summary}”</div>}
                       <div className="small muted" title={e.ua}>
                         {when(e.at)} ({ago(e.at)})
                         {e.signal !== 'real' && (
@@ -274,6 +277,18 @@ export function Detail({ id }: { id: string }) {
             </section>
           )}
 
+          {isEmail && !m.followUpOf && (m.status === 'sent' || !m.status) && (
+            <SequenceCard
+              message={m}
+              me={me}
+              onRefresh={reload}
+              onChange={(msg) => {
+                setToast(msg);
+                reload();
+              }}
+            />
+          )}
+
           {!application && m.status !== 'cancelled' && (
             <LinkToCompany
               message={m}
@@ -306,7 +321,7 @@ export function Detail({ id }: { id: string }) {
             </section>
           )}
 
-          {isEmail && !pending && (m.stats.replies ?? 0) === 0 && (
+          {isEmail && !pending && (m.stats.replies ?? 0) === 0 && m.sequence?.status !== 'active' && (
             <section className="card tip">
               <h2>
                 <Icon name="spark" size={14} /> Next step

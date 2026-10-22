@@ -41,6 +41,9 @@ export interface Message {
   applicationId?: string;
   followUpOf?: string;
   status?: 'scheduled' | 'sending' | 'sent' | 'failed' | 'cancelled';
+  automatic?: boolean;
+  trackOpens?: boolean;
+  sequence?: Sequence;
   scheduledAt?: string;
   sendError?: string;
   links: TrackedLink[];
@@ -54,6 +57,8 @@ export interface TrackEvent {
   messageId: string;
   type: 'open' | 'click' | 'reply';
   from?: string;
+  summary?: string;
+  suggestedStage?: string;
   linkToken?: string;
   at: string;
   ip?: string;
@@ -76,6 +81,15 @@ export interface Me {
   weeklyGoal: number;
   followUpDays: number;
   replyDetection: boolean;
+  replyReading: boolean;
+  calendarSync: boolean;
+  calendarSyncedAt?: string;
+  sequenceDays: number[];
+  sequenceByDefault: boolean;
+  dailyCap: number;
+  sentToday: number;
+  timezone: string;
+  weeklyDigest: boolean;
   needsReauth: boolean;
   publicUrl: string;
 }
@@ -142,6 +156,10 @@ export interface Application {
   notes?: { _id: string; text: string; at: string }[];
   interviewAt?: string | null;
   snoozedUntil?: string | null;
+  interviews?: { eventId: string; title: string; start: string; end: string; attendees: string[]; matchedBy: string; thankYouDone: boolean }[];
+  suggestion?: { stage?: Stage; reason?: string; at?: string };
+  posting?: { postedAt?: string; reposted?: boolean; salary?: string; capturedAt?: string; source?: string };
+  thankYous?: string[];
   brief?: { text?: string; sources?: { title: string; url: string }[]; at?: string };
   prep?: { _id?: string; text: string; done: boolean }[];
   archived: boolean;
@@ -179,8 +197,52 @@ export interface MessageSummary {
   kind?: 'email' | 'link';
 }
 
+export interface SequenceStep {
+  _id: string;
+  afterDays: number;
+  dueAt: string;
+  status: 'pending' | 'sent' | 'skipped' | 'cancelled';
+  subject: string;
+  body: string;
+  draftedAt?: string;
+  edited: boolean;
+  messageId?: string;
+  error?: string;
+}
+
+export interface Sequence {
+  status: 'active' | 'stopped' | 'done';
+  stopReason?: string;
+  steps: SequenceStep[];
+}
+
+export interface Person {
+  _id: string;
+  name: string;
+  email: string;
+  company: string;
+  title: string;
+  linkedin: string;
+  relationship: 'referral' | 'recruiter' | 'hiring_manager' | 'founder' | 'friend' | 'other';
+  notes: string;
+  applicationIds: string[];
+  lastContactAt?: string;
+}
+
+export const RELATIONSHIP_LABEL: Record<Person['relationship'], string> = {
+  referral: 'Can refer me',
+  recruiter: 'Recruiter',
+  hiring_manager: 'Hiring manager',
+  founder: 'Founder',
+  friend: 'Friend / ex-colleague',
+  other: 'Other',
+};
+
 export interface Today {
   goal: number;
+  suggestions: { application: AppSummary; stage: Stage; reason: string; at: string }[];
+  thankYous: { application: AppSummary; key: string; title: string; end: string }[];
+  upcomingAuto: { message: MessageSummary; application?: AppSummary; step: number; dueAt: string; drafted: boolean }[];
   followUps: { application: AppSummary; message: MessageSummary; followUpNumber: number; daysSince: number }[];
   ghosted: { application: AppSummary; daysSince: number }[];
   hot: {
@@ -191,7 +253,7 @@ export interface Today {
     clickedLabels: string[];
     lastAt: string;
   }[];
-  replies: { at: string; from?: string; message?: MessageSummary; application?: AppSummary }[];
+  replies: { at: string; from?: string; summary?: string; message?: MessageSummary; application?: AppSummary }[];
   scheduled: { _id: string; subject: string; to: Recipient[]; label: string; scheduledAt?: string; status: string; sendError?: string }[];
   interviews: AppSummary[];
   stageCounts: Record<string, number>;
@@ -202,6 +264,10 @@ export interface Today {
 export interface Insights {
   funnel: { stage: Stage; label: string; count: number }[];
   bySource: { source: Source; started: number; replied: number; interviewing: number }[];
+  byTemplate: { name: string; sent: number; replied: number; clicked: number }[];
+  byLink: { label: string; sent: number; replied: number; clicked: number; linkClicks: number }[];
+  bySubject: { subject: string; sent: number; replied: number; clicked: number }[];
+  sequences: { sent: number; replies: number };
   emails: { sent: number; opened: number; clicked: number; replied: number; followUps: number; avgReplyDays: number | null };
   engagement: { type: 'open' | 'click' | 'reply'; at: string }[];
   started: string[];
@@ -224,4 +290,12 @@ export interface Prefill {
   applicationId?: string;
   followUpOf?: string;
   includeSignature?: boolean;
+}
+
+export interface FoundPeople {
+  domain: string;
+  mailOk: boolean;
+  needDomain?: boolean;
+  people: { name: string; title: string; emails: { email: string; confidence: 'verified' | 'likely' | 'possible'; why: string }[] }[];
+  sources: { title: string; url: string }[];
 }

@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react';
-import { OPEN_STAGES, STAGE_LABEL } from '../../../src/shared/stages';
+import { OPEN_STAGES, STAGE_LABEL, type Stage } from '../../../src/shared/stages';
 import { api, type Me, type Today } from '../api';
 import { Empty, ImportBanner, Logo, Toast, useApi } from '../components';
 import { ago, day, linkName, streak, when, weekStart } from '../format';
@@ -18,7 +18,7 @@ interface Action {
   // Lower sorts first: what deserves attention most.
   rank: number;
   at: number;
-  kind: 'reply' | 'interview' | 'click' | 'open' | 'followup' | 'ghost' | 'failed';
+  kind: 'reply' | 'suggest' | 'thankyou' | 'interview' | 'click' | 'open' | 'followup' | 'ghost' | 'failed';
   company: string;
   title: ReactNode;
   sub: ReactNode;
@@ -28,6 +28,8 @@ interface Action {
 
 const KIND_LABEL: Record<Action['kind'], string> = {
   reply: 'Reply',
+  suggest: 'Suggestion',
+  thankyou: 'Thank-you',
   interview: 'Interview',
   click: 'Clicked',
   open: 'Opened',
@@ -57,6 +59,16 @@ export function TodayView({ me }: { me: Me }) {
     reload();
   };
 
+  const act = async (path: string, msg: string, body: Record<string, unknown> = {}) => {
+    try {
+      await api(path, { method: 'POST', body });
+      setToast(msg);
+    } catch (e) {
+      setToast((e as Error).message);
+    }
+    reload();
+  };
+
   const snooze = (id: string, days: number) =>
     patchApp(id, { snoozedUntil: new Date(Date.now() + days * 86_400_000).toISOString() }, `Hidden for ${days} days`);
 
@@ -76,11 +88,57 @@ export function TodayView({ me }: { me: Me }) {
             {who(r.from)} replied{r.application ? <span className="muted"> · {r.application.company}</span> : null}
           </>
         ),
-        sub: `${ago(r.at)} · ${r.message.subject}`,
+        sub: r.summary ? `“${r.summary}” · ${ago(r.at)}` : `${ago(r.at)} · ${r.message.subject}`,
         primary: (
           <a className="button small primary" href={r.application ? `#/a/${r.application._id}` : `#/m/${r.message._id}`}>
             Open
           </a>
+        ),
+      });
+    }
+    for (const s of data.suggestions) {
+      out.push({
+        key: `s${s.application._id}`,
+        rank: 0.5,
+        at: +new Date(s.at),
+        kind: 'suggest',
+        company: s.application.company,
+        title: (
+          <>
+            Move {s.application.company} to <strong>{STAGE_LABEL[s.stage as Stage] ?? s.stage}</strong>?
+          </>
+        ),
+        sub: s.reason,
+        primary: (
+          <button className="button small primary" onClick={() => act(`/api/applications/${s.application._id}/suggestion/accept`, `${s.application.company} → ${STAGE_LABEL[s.stage as Stage] ?? s.stage}`)}>
+            Move
+          </button>
+        ),
+        secondary: (
+          <button className="button small ghost" onClick={() => act(`/api/applications/${s.application._id}/suggestion/dismiss`, 'Dismissed')}>
+            No
+          </button>
+        ),
+      });
+    }
+    for (const t of data.thankYous) {
+      out.push({
+        key: `t${t.application._id}${t.key}`,
+        rank: 1.5,
+        at: +new Date(t.end),
+        kind: 'thankyou',
+        company: t.application.company,
+        title: <>Send {t.application.company} a thank-you</>,
+        sub: `${t.title} · ended ${ago(t.end)}`,
+        primary: (
+          <a className="button small primary" href={`#/compose?thankyou=${t.application._id}&key=${encodeURIComponent(t.key)}`}>
+            Write it
+          </a>
+        ),
+        secondary: (
+          <button className="button small ghost" onClick={() => act(`/api/applications/${t.application._id}/thankyou-done`, 'Skipped', { key: t.key })}>
+            Skip
+          </button>
         ),
       });
     }
@@ -346,6 +404,27 @@ export function TodayView({ me }: { me: Me }) {
               })}
             </ul>
           </section>
+
+          {(data?.upcomingAuto.length ?? 0) > 0 && (
+            <section className="panel">
+              <div className="panel-head">
+                <h2>Follow-ups going out</h2>
+              </div>
+              <ul className="mini-list">
+                {data!.upcomingAuto.map((u) => (
+                  <li key={`${u.message._id}${u.step}`}>
+                    <a href={`#/m/${u.message._id}`}>
+                      {u.application?.company ?? u.message.label ?? u.message.subject} · #{u.step}
+                    </a>
+                    <span className="muted small">
+                      {ago(u.dueAt)}
+                      {!u.drafted && ' · drafting'} · review or edit
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
 
           {scheduled.length > 0 && (
             <section className="panel">

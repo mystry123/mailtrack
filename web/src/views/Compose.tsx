@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { lintEmail } from '../../../src/shared/lint';
 import { renderBody, withSignature } from '../../../src/shared/render';
 import { api, type Application, type EnhanceResult, type Me, type Message, type SavedLink, type Template } from '../api';
 import { AppPicker, Modal, StageBadge, type PickedApp } from '../components';
@@ -68,10 +69,21 @@ export function Compose({ me, params }: { me: Me; params: URLSearchParams }) {
   const followUpId = params.get('followup');
   const againId = params.get('again');
   const appParam = params.get('app');
+  const thankYouApp = params.get('thankyou');
+  const thankYouKey = params.get('key');
+  const referralContact = params.get('referral');
+  const toParam = params.get('to');
   // Only a plain "New email" keeps a local draft; prefilled ones start from their source.
-  const plain = !followUpId && !againId && !appParam;
+  const plain = !followUpId && !againId && !appParam && !thankYouApp && !referralContact && !toParam;
 
-  const [draft, setDraft] = useState<Draft>(() => (plain ? loadDraft() : { ...EMPTY, app: appParam ? { applicationId: appParam } : {} }));
+  const [draft, setDraft] = useState<Draft>(() =>
+    plain ? loadDraft() : { ...EMPTY, to: toParam ?? '', app: appParam || thankYouApp ? { applicationId: (appParam || thankYouApp)! } : {} },
+  );
+  const [sequence, setSequence] = useState({ on: me.sequenceByDefault, days: me.sequenceDays.length ? me.sequenceDays : [4, 9] });
+  const [trackOpens, setTrackOpens] = useState(true);
+  const [templateId, setTemplateId] = useState<string | undefined>();
+  const [confirmSend, setConfirmSend] = useState(false);
+  const [prefilling, setPrefilling] = useState('');
   const [followUp, setFollowUp] = useState<{ id: string; subject: string } | null>(null);
   const [notice, setNotice] = useState('');
   const [apps, setApps] = useState<Application[]>([]);
@@ -119,6 +131,30 @@ export function Compose({ me, params }: { me: Me; params: URLSearchParams }) {
       .catch((e) => setError(e.message));
   }, [followUpId, againId]);
 
+  // Thank-you note after an interview, or a referral ask: Gemini drafts it.
+  useEffect(() => {
+    if (!thankYouApp && !referralContact) return;
+    setPrefilling(thankYouApp ? 'Gemini is drafting your thank-you note…' : 'Gemini is drafting your referral ask…');
+    const req = thankYouApp
+      ? api<EnhanceResult & { to: string[] }>('/api/ai/thankyou', { method: 'POST', body: { applicationId: thankYouApp, key: thankYouKey } }).then((d) => ({
+          ...d,
+          to: d.to.join(', '),
+          applicationId: thankYouApp,
+        }))
+      : Promise.all([
+          api<EnhanceResult & { applicationId?: string }>('/api/ai/referral', { method: 'POST', body: { contactId: referralContact, applicationId: appParam || undefined } }),
+          api<{ contact: { name: string; email: string } }>(`/api/contacts/${referralContact}`),
+        ]).then(([d, c]) => ({ ...d, to: c.contact.email ? fmtAddr({ email: c.contact.email, name: c.contact.name }) : '', applicationId: d.applicationId }));
+    req
+      .then((d) => {
+        setDraft((x) => ({ ...x, to: d.to, subject: d.subject, body: d.body, app: d.applicationId ? { applicationId: d.applicationId } : x.app }));
+        setSequence((s) => ({ ...s, on: false }));
+        if (d.notes) setNotice(d.notes);
+      })
+      .catch((e) => setError(e.message))
+      .finally(() => setPrefilling(''));
+  }, [thankYouApp, thankYouKey, referralContact, appParam]);
+
   useEffect(() => {
     if (plain) saveDraft(draft);
   }, [draft, plain]);
@@ -136,14 +172,14 @@ export function Compose({ me, params }: { me: Me; params: URLSearchParams }) {
   const toKey = to.ok.map((r) => r.email.toLowerCase()).join(',');
   const company = linkedApp?.company ?? draft.app.newApplication?.company ?? '';
   useEffect(() => {
-    if (followUp || (!toKey && !company)) return setDups(null);
+    if (followUp || thankYouApp || (!toKey && !company)) return setDups(null);
     const t = setTimeout(() => {
       api<DupCheck>(`/api/contacts/check?${new URLSearchParams({ emails: toKey, company: draft.app.newApplication ? company : '' })}`)
         .then(setDups)
         .catch(() => setDups(null));
     }, 500);
     return () => clearTimeout(t);
-  }, [toKey, company, followUp, draft.app.newApplication]);
+  }, [toKey, company, followUp, thankYouApp, draft.app.newApplication]);
 
   const apply = (fn: (value: string, start: number, end: number) => TextEdit) => {
     const el = bodyRef.current;
@@ -221,6 +257,7 @@ export function Compose({ me, params }: { me: Me; params: URLSearchParams }) {
 
   const applyTemplate = (t: Template) => {
     setDraft((d) => ({ ...d, subject: t.subject || d.subject, body: t.body }));
+    setTemplateId(t._id);
     setNotice(`Template "${t.name}" applied.`);
   };
 
@@ -240,9 +277,15 @@ export function Compose({ me, params }: { me: Me; params: URLSearchParams }) {
   if (!draft.body.trim()) problems.push('Write something');
   if (scheduledAt && scheduledAt.getTime() < Date.now()) problems.push('Pick a time in the future');
 
-  const send = async () => {
+  const lint = lintEmail({ subject: draft.subject, body: draft.body, recipientName: to.ok[0]?.name, company: linkedApp?.company ?? draft.label });
+  const lintErrors = lint.filter((l) => l.level === 'error');
+  const capLeft = me.dailyCap > 0 ? me.dailyCap - me.sentToday : Infinity;
+
+  const send = async (force = false) => {
     if (sending) return;
     if (problems.length) return setError(problems[0]);
+    if (lintErrors.length && !force) return setConfirmSend(true);
+    setConfirmSend(false);
     setSending(true);
     setError('');
     try {
@@ -258,6 +301,10 @@ export function Compose({ me, params }: { me: Me; params: URLSearchParams }) {
           ...draft.app,
           followUpOf: followUp?.id,
           scheduledAt: scheduledAt?.toISOString(),
+          trackOpens,
+          templateId,
+          sequenceDays: !followUp && sequence.on ? sequence.days : undefined,
+          thankYouFor: thankYouApp && thankYouKey ? { applicationId: thankYouApp, key: thankYouKey } : undefined,
         },
       });
       if (plain) saveDraft(null);
@@ -273,7 +320,7 @@ export function Compose({ me, params }: { me: Me; params: URLSearchParams }) {
     <div className="page">
       <header className="page-head">
         <div>
-          <h1>{followUp ? 'Follow up' : againId ? 'Send again' : 'New email'}</h1>
+          <h1>{followUp ? 'Follow up' : againId ? 'Send again' : thankYouApp ? 'Thank-you note' : referralContact ? 'Ask for a referral' : 'New email'}</h1>
           <p className="muted">
             {followUp ? (
               <>
@@ -306,6 +353,7 @@ export function Compose({ me, params }: { me: Me; params: URLSearchParams }) {
 
       <div className="compose">
         <div className="card form">
+          {prefilling && <div className="notice">{prefilling}</div>}
           {notice && <div className="notice">{notice}</div>}
           <div className="from muted small">From {me.fromName || me.name ? `${me.fromName || me.name} <${me.email}>` : me.email}</div>
           <label>
@@ -387,6 +435,15 @@ export function Compose({ me, params }: { me: Me; params: URLSearchParams }) {
             <textarea ref={bodyRef} value={draft.body} onChange={set('body')} onKeyDown={onKeyDown} rows={14} />
           </div>
           <div className="hint small muted">⌘B / ⌘I / ⌘U / ⌘K format · ⌘↵ sends · every link is tracked</div>
+          {draft.body.trim() && lint.length > 0 && (
+            <ul className="lint">
+              {lint.map((l) => (
+                <li key={l.message} className={l.level}>
+                  <span aria-hidden>{l.level === 'error' ? '!' : '·'}</span> {l.message}
+                </li>
+              ))}
+            </ul>
+          )}
 
           <div className="ai">
             <div className="ai-head">
@@ -472,12 +529,49 @@ export function Compose({ me, params }: { me: Me; params: URLSearchParams }) {
               <input type="checkbox" checked={schedule.on} onChange={(e) => setSchedule({ ...schedule, on: e.target.checked })} />
               Send later
             </label>
+            <label className="check" title="Without the tracking image: clicks and replies still count. Use for important one-to-one emails.">
+              <input type="checkbox" checked={trackOpens} onChange={(e) => setTrackOpens(e.target.checked)} />
+              Track opens
+            </label>
             {!followUp && (
               <button type="button" className="link-btn small" onClick={() => setSaveAs(draft.subject || 'My template')} disabled={!draft.body.trim()}>
                 Save as template
               </button>
             )}
           </div>
+
+          {!followUp && (
+            <div className={sequence.on ? 'sequence-box on' : 'sequence-box'}>
+              <label className="check">
+                <input type="checkbox" checked={sequence.on} onChange={(e) => setSequence({ ...sequence, on: e.target.checked })} />
+                <strong>Automatic follow-ups</strong>
+              </label>
+              <span className="small muted">
+                {sequence.on ? (
+                  <>
+                    After{' '}
+                    {sequence.days.map((d, i) => (
+                      <span key={i}>
+                        {i > 0 && (i === sequence.days.length - 1 ? ' and ' : ', ')}
+                        <input
+                          className="day-input"
+                          type="number"
+                          min={1}
+                          max={60}
+                          value={d}
+                          aria-label={`Follow-up ${i + 1}, working days`}
+                          onChange={(e) => setSequence({ ...sequence, days: sequence.days.map((x, j) => (j === i ? Math.max(1, Math.min(60, Number(e.target.value) || 1)) : x)) })}
+                        />
+                      </span>
+                    ))}{' '}
+                    working days with no reply. Gemini drafts them now; you can read and edit them on the email’s page. They stop when anyone replies.
+                  </>
+                ) : (
+                  'Off: Today will remind you to follow up by hand.'
+                )}
+              </span>
+            </div>
+          )}
 
           {schedule.on && (
             <div className="schedule">
@@ -509,7 +603,12 @@ export function Compose({ me, params }: { me: Me; params: URLSearchParams }) {
                 Clear
               </button>
             )}
-            <button className="primary" onClick={send} disabled={sending || me.needsReauth}>
+            {me.dailyCap > 0 && (
+              <span className={capLeft <= 5 ? 'small cap low' : 'small muted cap'} title="Daily limit protects your Gmail reputation (Settings)">
+                {me.sentToday}/{me.dailyCap} today
+              </span>
+            )}
+            <button className="primary" onClick={() => send()} disabled={sending || me.needsReauth || !!prefilling}>
               {sending ? 'Sending…' : schedule.on ? 'Schedule' : followUp ? 'Send follow-up' : 'Send tracked email'}
             </button>
           </div>
@@ -522,6 +621,26 @@ export function Compose({ me, params }: { me: Me; params: URLSearchParams }) {
           {preview.links.length > 0 && <div className="small muted">Tracked links: {preview.links.map((l) => l.label).join(' · ')}</div>}
         </div>
       </div>
+
+      {confirmSend && (
+        <Modal title="Send anyway?" onClose={() => setConfirmSend(false)}>
+          <ul className="lint">
+            {lintErrors.map((l) => (
+              <li key={l.message} className="error">
+                <span aria-hidden>!</span> {l.message}
+              </li>
+            ))}
+          </ul>
+          <div className="actions">
+            <button className="ghost" onClick={() => setConfirmSend(false)}>
+              Fix it
+            </button>
+            <button className="primary" onClick={() => send(true)}>
+              Send anyway
+            </button>
+          </div>
+        </Modal>
+      )}
 
       {saveAs !== null && (
         <Modal title="Save as template" onClose={() => setSaveAs(null)}>

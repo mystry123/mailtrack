@@ -8,6 +8,7 @@ import { Compose } from './views/Compose';
 import { Detail } from './views/Detail';
 import { InsightsView } from './views/Insights';
 import { List } from './views/List';
+import { People } from './views/People';
 import { Login } from './views/Login';
 import { QuickLink } from './views/QuickLink';
 import { Settings } from './views/Settings';
@@ -30,6 +31,7 @@ const NAV = [
   { to: '/', label: 'Today', icon: 'today' },
   { to: '/pipeline', label: 'Pipeline', icon: 'pipeline' },
   { to: '/sent', label: 'Sent', icon: 'sent' },
+  { to: '/people', label: 'People', icon: 'people' },
   { to: '/insights', label: 'Insights', icon: 'insights' },
 ];
 
@@ -86,6 +88,7 @@ export function App() {
   } else if (path === '/pipeline') view = <Board />;
   else if (path === '/sent') view = <List />;
   else if (path === '/insights') view = <InsightsView />;
+  else if (path === '/people') view = <People />;
   else if (path === '/compose') view = <Compose key={query} me={me} params={params} />;
   else if (path === '/link') view = <QuickLink params={params} />;
   else if (path === '/settings') view = <Settings me={me} onSaved={loadMe} />;

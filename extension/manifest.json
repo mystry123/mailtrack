@@ -1,15 +1,32 @@
 {
   "manifest_version": 3,
-  "name": "Mailtrack: ignore my own opens",
-  "version": "1.0.0",
-  "description": "Stops your own Gmail views of tracked emails from counting as opens on track.shotline.in.",
+  "name": "Mailtrack",
+  "version": "1.1.0",
+  "description": "Save job postings to your Mailtrack pipeline, and stop your own Gmail views counting as opens.",
   "host_permissions": ["https://track.shotline.in/*"],
+  "permissions": ["activeTab", "scripting"],
   "background": { "service_worker": "background.js" },
+  "action": { "default_title": "Save this job to Mailtrack" },
   "content_scripts": [
     {
       "matches": ["https://mail.google.com/*"],
       "js": ["content.js"],
       "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://www.linkedin.com/jobs/*",
+        "https://boards.greenhouse.io/*",
+        "https://job-boards.greenhouse.io/*",
+        "https://jobs.lever.co/*",
+        "https://jobs.ashbyhq.com/*",
+        "https://wellfound.com/jobs/*",
+        "https://wellfound.com/company/*",
+        "https://apply.workable.com/*",
+        "https://*.myworkdayjobs.com/*"
+      ],
+      "js": ["extract.js", "job.js"],
+      "run_at": "document_idle"
     }
   ]
 }

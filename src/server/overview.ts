@@ -112,7 +112,7 @@ export async function today() {
   const replies = replyEvents.map((e) => {
     const m = replyMsgs.find((x) => String(x._id) === String(e.messageId));
     const app = m?.applicationId ? appById.get(String(m.applicationId)) : undefined;
-    return { at: e.at, from: e.from, message: m ? summary(m) : undefined, application: app ? appSummary(app) : undefined };
+    return { at: e.at, from: e.from, summary: e.summary, message: m ? summary(m) : undefined, application: app ? appSummary(app) : undefined };
   });
 
   const scheduled = await MessageModel.find({ status: { $in: ['scheduled', 'failed'] } })

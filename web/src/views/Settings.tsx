@@ -13,6 +13,20 @@ export function Settings({ me, onSaved }: { me: Me; onSaved: () => void }) {
   const [toast, setToast] = useState('');
   const [error, setError] = useState('');
   const [checking, setChecking] = useState(false);
+  const [sequenceByDefault, setSequenceByDefault] = useState(me.sequenceByDefault);
+  const [sequenceDays, setSequenceDays] = useState(me.sequenceDays.join(', '));
+  const [dailyCap, setDailyCap] = useState(me.dailyCap);
+  const [timezone, setTimezone] = useState(me.timezone);
+  const [weeklyDigest, setWeeklyDigest] = useState(me.weeklyDigest);
+  const [digest, setDigest] = useState<{ subject: string; markdown: string } | null>(null);
+  const [busy, setBusy] = useState('');
+  const zones = (() => {
+    try {
+      return (Intl as unknown as { supportedValuesOf(k: string): string[] }).supportedValuesOf('timeZone');
+    } catch {
+      return [me.timezone];
+    }
+  })();
 
   useEffect(() => {
     api<{ links: SavedLink[] }>('/api/saved-links').then((r) => setLinks(r.links)).catch((e) => setError(e.message));
@@ -24,7 +38,15 @@ export function Settings({ me, onSaved }: { me: Me; onSaved: () => void }) {
   const save = async () => {
     setError('');
     try {
-      await api('/api/me', { method: 'PUT', body: { fromName, signature, aboutMe, weeklyGoal, followUpDays } });
+      const days = sequenceDays
+        .split(/[,\s]+/)
+        .map(Number)
+        .filter((n) => Number.isInteger(n) && n > 0 && n <= 60)
+        .slice(0, 3);
+      await api('/api/me', {
+        method: 'PUT',
+        body: { fromName, signature, aboutMe, weeklyGoal, followUpDays, sequenceByDefault, sequenceDays: days.length ? days : [4, 9], dailyCap, timezone, weeklyDigest },
+      });
       const clean = links.filter((l) => l.label.trim() || l.url.trim());
       const r = await api<{ links: SavedLink[] }>('/api/saved-links', { method: 'PUT', body: { links: clean } });
       setLinks(r.links);
@@ -38,6 +60,17 @@ export function Settings({ me, onSaved }: { me: Me; onSaved: () => void }) {
   const deleteTemplate = async (t: Template) => {
     await api(`/api/templates/${t._id}`, { method: 'DELETE' });
     setTemplates(templates.filter((x) => x._id !== t._id));
+  };
+
+  const run = async (key: string, fn: () => Promise<string>) => {
+    setBusy(key);
+    try {
+      setToast(await fn());
+    } catch (e) {
+      setToast((e as Error).message);
+    } finally {
+      setBusy('');
+    }
   };
 
   const checkNow = async () => {
@@ -115,6 +148,94 @@ export function Settings({ me, onSaved }: { me: Me; onSaved: () => void }) {
             </a>
           )}
         </div>
+        <div className="setting-row">
+          <div>
+            <strong>Gemini reads replies</strong>
+            <div className="small muted">
+              {me.replyReading
+                ? 'On. Each reply to an email sent from here gets a one-line summary and a suggested stage (“Wants a call Thursday” → Screening).'
+                : 'Off. Lets Gemini read only the replies to emails sent from here, to summarise them and suggest the next stage. Needs Gmail read permission.'}
+            </div>
+          </div>
+          {!me.replyReading && (
+            <a className="button small" href="/auth/google?add=read">
+              Turn on
+            </a>
+          )}
+        </div>
+        <div className="setting-row">
+          <div>
+            <strong>Interviews from Google Calendar</strong>
+            <div className="small muted">
+              {me.calendarSync
+                ? `On. Matches events to companies by attendees and names${me.calendarSyncedAt ? `; last checked ${new Date(me.calendarSyncedAt).toLocaleString()}` : ''}. You get prep reminders and a thank-you prompt after each one.`
+                : 'Off. Read-only access to your calendar events finds interviews automatically.'}
+            </div>
+          </div>
+          {me.calendarSync ? (
+            <button className="small" disabled={busy === 'cal'} onClick={() => run('cal', async () => `Matched ${(await api<{ matched: number }>('/api/calendar/sync', { method: 'POST', body: {} })).matched} events`)}>
+              Sync now
+            </button>
+          ) : (
+            <a className="button small" href="/auth/google?add=calendar">
+              Turn on
+            </a>
+          )}
+        </div>
+      </section>
+
+      <section className="card form">
+        <h2>Follow-ups and sending</h2>
+        <label className="check">
+          <input type="checkbox" checked={sequenceByDefault} onChange={(e) => setSequenceByDefault(e.target.checked)} />
+          Turn on automatic follow-ups for new emails by default
+        </label>
+        <div className="two" style={{ marginTop: 12 }}>
+          <label>
+            Follow up after (working days)
+            <input value={sequenceDays} onChange={(e) => setSequenceDays(e.target.value)} placeholder="4, 9" />
+          </label>
+          <label>
+            Daily sending limit (0 = none)
+            <input type="number" min={0} max={500} value={dailyCap} onChange={(e) => setDailyCap(Number(e.target.value))} />
+          </label>
+        </div>
+        <p className="small muted">
+          Up to three follow-ups, each sent into the same thread unless someone replies. The daily limit counts every email you send from here, including
+          automatic ones. Sending many emails at once from a personal Gmail can get it flagged. Today: {me.sentToday} sent.
+        </p>
+      </section>
+
+      <section className="card form">
+        <h2>Weekly digest</h2>
+        <label className="check">
+          <input type="checkbox" checked={weeklyDigest} onChange={(e) => setWeeklyDigest(e.target.checked)} />
+          Email me a summary every Monday at 9:00
+        </label>
+        <label style={{ marginTop: 12 }}>
+          Time zone
+          <select value={timezone} onChange={(e) => setTimezone(e.target.value)}>
+            {zones.map((z) => (
+              <option key={z} value={z}>
+                {z}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="actions">
+          <button className="ghost small" disabled={!!busy} onClick={() => run('dp', async () => (setDigest(await api('/api/digest/preview')), 'Preview below'))}>
+            Preview
+          </button>
+          <button className="small" disabled={!!busy} onClick={() => run('ds', async () => (await api('/api/digest/send', { method: 'POST', body: {} }), `Sent to ${me.email}`))}>
+            Send it now
+          </button>
+        </div>
+        {digest && (
+          <div className="digest-preview">
+            <strong>{digest.subject}</strong>
+            <pre>{digest.markdown}</pre>
+          </div>
+        )}
       </section>
 
       <section className="card form">
@@ -172,8 +293,12 @@ export function Settings({ me, onSaved }: { me: Me; onSaved: () => void }) {
       <section className="card form">
         <h2>Chrome extension</h2>
         <p className="small muted">
-          Stops your own Gmail views from counting as opens. In Chrome: <code>chrome://extensions</code> → Developer mode → Load unpacked → the{' '}
-          <code>extension/</code> folder of the mailtrack repo.
+          Adds a <strong>Save to Mailtrack</strong> button on job pages (LinkedIn, Greenhouse, Lever, Ashby, Wellfound, Workable and most careers pages) that
+          captures the role, description, salary and posting age, and stops your own Gmail views counting as opens.
+        </p>
+        <p className="small muted">
+          Install: <code>chrome://extensions</code> → Developer mode → Load unpacked → the <code>extension/</code> folder of the mailtrack repo. After an
+          update, click the reload icon on the extension. Stay signed in here in the same Chrome profile.
         </p>
       </section>
 

@@ -11,6 +11,7 @@ import { apiRouter } from './routes/api.js';
 import { applicationsRouter } from './routes/applications.js';
 import { contactsRouter } from './routes/contacts.js';
 import { startJobs } from './jobs.js';
+import { ApplicationModel, ContactModel } from './models.js';
 import { authRouter } from './routes/auth.js';
 import { trackRouter } from './routes/track.js';
 
@@ -63,9 +64,31 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   res.status(500).json({ error: 'internal' });
 });
 
+// Contacts used to live inside each application; they're a shared list now.
+// Idempotent: moves any left inside applications, then empties those fields.
+async function migrateEmbeddedContacts() {
+  const apps = await ApplicationModel.find({ 'contacts.0': { $exists: true } });
+  for (const app of apps) {
+    for (const c of app.contacts) {
+      if (!c.name && !c.email) continue;
+      const email = (c.email ?? '').trim().toLowerCase();
+      const fields = { name: c.name ?? '', title: c.title ?? '', linkedin: c.linkedin ?? '', company: app.company };
+      if (email) {
+        await ContactModel.updateOne({ email }, { $setOnInsert: { email, ...fields }, $addToSet: { applicationIds: app._id } }, { upsert: true });
+      } else {
+        await ContactModel.create({ ...fields, applicationIds: [app._id] });
+      }
+    }
+    app.set('contacts', []);
+    await app.save();
+    logger.info({ company: app.company }, 'moved contacts to the shared list');
+  }
+}
+
 async function main() {
   await mongoose.connect(env.MONGODB_URI, { dbName: env.MONGODB_DB });
   await mongoose.syncIndexes();
+  await migrateEmbeddedContacts();
   if (runJobs) startJobs();
   else logger.info('background jobs off (not production; set RUN_JOBS=true to enable)');
   const server = app.listen(env.PORT, '127.0.0.1', () => logger.info({ port: env.PORT }, 'mailtrack listening'));

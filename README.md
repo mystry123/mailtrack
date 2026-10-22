@@ -27,6 +27,26 @@ Gmail loads images through its proxy, so a Gmail open is real but has no locatio
 
 Viewing your own Sent copy goes through the same Gmail image proxy as the recipient's open, so the server can't tell them apart. The Chrome extension in `extension/` fixes that for desktop Chrome: it blanks the pixel in your Gmail and reports `POST /x/seen`, and opens within 2 minutes of that count as "You". Gmail phone app views still count; use "That was me". Fetches from Google's IP ranges without the GoogleImageProxy user agent are Google scanning the message on delivery, and are ignored.
 
+## Features (round 4)
+
+- **Automatic follow-ups**: a first email can carry up to three follow-ups (default 4 and 9 working days). Gemini drafts them right after sending; you can read, edit, skip, send now or stop them on the email's page. They go into the same Gmail thread and stop when anyone replies, the application moves past Reached out, or it's closed (`src/server/sequences.ts`).
+- **Reply summaries**: with the optional read permission (`/auth/google?add=read`), Gemini summarises each reply and suggests the next stage; you accept or dismiss it on Today or the application page.
+- **Interviews from Google Calendar** (`/auth/google?add=calendar`): events matched to companies by attendee domain or name; prep reminders and a thank-you prompt after each (`src/server/calendar.ts`).
+- **People**: everyone you email becomes a contact; add friends and ex-colleagues; Gemini drafts referral asks; "Find who to email" searches for founders/hiring managers and guesses addresses from common patterns and ones you've already emailed (optional `HUNTER_API_KEY` for verified lookups).
+- **Chrome extension**: Save to Mailtrack on job pages (JSON-LD first, then per-site selectors), with ghost-job signals (age, reposts, no salary).
+- **Sending safety**: daily cap (default 50, counts everything incl. automatic), pre-send checks (`src/shared/lint.ts`), optional open tracking per email.
+- **Insights**: reply rate by template, by resume version (saved links) and by subject; weekly Monday digest email.
+
+## Tests
+
+```bash
+pnpm test        # unit tests (no network, no database)
+pnpm build && pnpm e2e   # end-to-end: real server on a throwaway database with fake Gmail/Calendar/Gemini,
+                         # every flow through the API, then a click-through in headless Chrome (test/ui.mjs)
+```
+
+`pnpm e2e` needs `MONGODB_URI` (from `.env`) and Chrome. It creates `mailtrack_e2e_<random>` and drops it at the end (`E2E_KEEP=1` keeps it, `E2E_UI=0` skips the browser part). Test mode (`NODE_ENV=test`, `FAKE_GOOGLE`, `FAKE_AI`) is refused in production. `deploy/screenshot.mjs` takes screenshots of any page for visual checks.
+
 ## Develop
 
 ```bash

@@ -130,7 +130,8 @@ export function List() {
                     {who}
                     {m.kind === 'email' && m.label && <span className="tag">{m.label}</span>}
                     {m.kind === 'link' && <span className="tag">link</span>}
-                    {m.followUpOf && <span className="tag">follow-up</span>}
+                    {m.followUpOf && <span className="tag">{m.automatic ? 'auto follow-up' : 'follow-up'}</span>}
+                    {m.sequence?.status === 'active' && <span className="tag">follow-ups on</span>}
                   </span>
                   <span className="row-sub muted">{m.kind === 'email' ? m.subject : m.links[0]?.url}</span>
                 </span>

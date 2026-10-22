@@ -4,7 +4,7 @@ import { defineConfig } from 'vitest/config';
 // environment; nothing here connects anywhere (end-to-end tests live in test/e2e).
 export default defineConfig({
   test: {
-    include: ['src/**/*.test.ts', 'web/src/**/*.test.ts'],
+    include: ['src/**/*.test.ts', 'web/src/**/*.test.ts', 'extension/**/*.test.ts'],
     env: {
       NODE_ENV: 'test',
       PUBLIC_URL: 'http://localhost:4199',

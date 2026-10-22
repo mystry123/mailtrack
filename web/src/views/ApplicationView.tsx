@@ -9,7 +9,8 @@ import {
   type Source,
   type Stage,
 } from '../../../src/shared/stages';
-import { api, type Application, type Contact, type Message, type TrackEvent } from '../api';
+import { api, type Application, type Message, type TrackEvent } from '../api';
+import { PeopleCard } from './PeopleCard';
 import { Logo, StageBadge, Stars, Toast, useApi } from '../components';
 import { ago, statusOf, STATUS_LABEL, when } from '../format';
 import { Icon } from '../icons';
@@ -101,7 +102,6 @@ export function ApplicationView({ id }: { id: string }) {
           salary: form.salary,
           source: form.source,
           jobDescription: form.jobDescription,
-          contacts: form.contacts,
           interviewAt: form.interviewAt || null,
         },
         'Saved',
@@ -145,9 +145,18 @@ export function ApplicationView({ id }: { id: string }) {
     await api(`/api/applications/${id}/prep`, { method: 'PUT', body: { items } });
   };
 
-  const setContact = (i: number, c: Partial<Contact>) =>
-    setForm({ ...form, contacts: (form.contacts ?? []).map((x, j) => (j === i ? { ...x, ...c } : x)) });
 
+  const postedDays = app.posting?.postedAt ? Math.floor((Date.now() - new Date(app.posting.postedAt).getTime()) / 86_400_000) : null;
+  const signals = [
+    postedDays !== null && postedDays > 30 ? `posted ${postedDays} days ago` : '',
+    app.posting?.reposted ? 'reposted' : '',
+    app.posting?.capturedAt && !app.posting.salary ? 'no salary listed' : '',
+  ].filter(Boolean);
+  // Two or more signs (or a very old posting) suggest the role may not be actively hiring.
+  const postingWarning =
+    signals.length >= 2 || (postedDays !== null && postedDays > 60)
+      ? `Possible ghost job: ${signals.join(' · ')}. Worth emailing a person there before spending time on the application.`
+      : '';
   const emails = data.messages.filter((m) => m.kind === 'email');
   const lastSent = [...emails].reverse().find((m) => m.status === 'sent' || !m.status);
   const prep = app.prep ?? [];
@@ -201,6 +210,25 @@ export function ApplicationView({ id }: { id: string }) {
           ))}
         </select>
       </div>
+
+      {app.suggestion?.stage && app.suggestion.stage !== app.stage && (
+        <div className="banner suggest">
+          <span>
+            <strong>Gemini suggests {STAGE_LABEL[app.suggestion.stage]}</strong>
+            {app.suggestion.reason ? ` · ${app.suggestion.reason}` : ''}
+          </span>
+          <span className="banner-actions">
+            <button className="ghost small" onClick={() => api(`/api/applications/${id}/suggestion/dismiss`, { method: 'POST', body: {} }).then(reload)}>
+              Dismiss
+            </button>
+            <button className="primary small" onClick={() => api(`/api/applications/${id}/suggestion/accept`, { method: 'POST', body: {} }).then(() => (setToast(`Moved to ${STAGE_LABEL[app.suggestion!.stage!]}`), reload()))}>
+              Move
+            </button>
+          </span>
+        </div>
+      )}
+
+      {postingWarning && <div className="banner warn">{postingWarning}</div>}
 
       <div className="action-row">
         <a className="button primary" href={`#/compose?app=${app._id}`}>
@@ -336,23 +364,6 @@ export function ApplicationView({ id }: { id: string }) {
                 />
               </label>
             </div>
-            <div className="field-label">Contacts</div>
-            {(form.contacts ?? []).map((c, i) => (
-              <div key={i} className="contact-row">
-                <input placeholder="Name" value={c.name} onChange={(e) => setContact(i, { name: e.target.value })} />
-                <input placeholder="Email" value={c.email} onChange={(e) => setContact(i, { email: e.target.value })} />
-                <input placeholder="Title" value={c.title} onChange={(e) => setContact(i, { title: e.target.value })} />
-                <button className="icon-btn" aria-label="Remove contact" onClick={() => setForm({ ...form, contacts: (form.contacts ?? []).filter((_, j) => j !== i) })}>
-                  ✕
-                </button>
-              </div>
-            ))}
-            <button
-              className="ghost small add-contact"
-              onClick={() => setForm({ ...form, contacts: [...(form.contacts ?? []), { name: '', email: '', title: '', linkedin: '' }] })}
-            >
-              + Add contact
-            </button>
             <label>
               Job description
               <textarea
@@ -369,6 +380,38 @@ export function ApplicationView({ id }: { id: string }) {
               </button>
             </div>
           </section>
+
+          <PeopleCard app={app} onToast={setToast} />
+
+          {(app.interviews?.length ?? 0) > 0 && (
+            <section className="card">
+              <h2>
+                <Icon name="calendar" size={15} /> Interviews <span className="muted small">from your calendar</span>
+              </h2>
+              <ul className="task-list">
+                {app.interviews!.map((iv) => {
+                  const past = new Date(iv.end).getTime() < Date.now();
+                  const thanked = iv.thankYouDone || (app.thankYous ?? []).includes(iv.eventId);
+                  return (
+                    <li key={iv.eventId} className="task">
+                      <div className="task-main">
+                        <div className="task-title">{iv.title}</div>
+                        <div className="muted small">
+                          {when(iv.start)} · {iv.attendees.join(', ') || 'no other attendees'}
+                        </div>
+                      </div>
+                      {past && !thanked && (
+                        <a className="button small primary" href={`#/compose?thankyou=${app._id}&key=${encodeURIComponent(iv.eventId)}`}>
+                          Thank-you note
+                        </a>
+                      )}
+                      {past && thanked && <span className="pill clicked">Thanked</span>}
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          )}
 
           <section className="card">
             <div className="card-head">

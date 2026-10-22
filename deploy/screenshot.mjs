@@ -33,7 +33,8 @@ await send('Page.navigate', { url: 'http://localhost:4100/app/' });
 await sleep(1500);
 await send('Runtime.evaluate', { expression: `localStorage.setItem('mt-theme','${theme}')` });
 for (const p of pages) {
-  const [name, hash] = p.split('=');
+  const i = p.indexOf('=');
+  const [name, hash] = [p.slice(0, i), p.slice(i + 1)];
   await send('Runtime.evaluate', { expression: `location.hash = '${hash}'; location.reload()` });
   await sleep(2500);
   const full = process.env.FULL === '1';

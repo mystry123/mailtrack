@@ -522,6 +522,16 @@ async function main() {
     assert.deepEqual(r, { created: 1, linked: 1 });
     assert.equal((await get('/api/applications/unlinked')).data.emails, 0);
   });
+  if (process.env.E2E_UI !== '0') {
+    console.log('\nDashboard in headless Chrome (test/ui.mjs)');
+    const ui = spawn('node', ['test/ui.mjs'], { env: { ...process.env, PUBLIC_URL: BASE, ALLOWED_EMAIL: ME, SESSION_SECRET: SECRET }, stdio: ['ignore', 'pipe', 'inherit'] });
+    let out = '';
+    ui.stdout.on('data', (d) => (out += d));
+    const code = await new Promise((r) => ui.on('close', r));
+    console.log(out.replace(/^/gm, '  ').trimEnd());
+    await step('UI click-through passes', async () => assert.equal(code, 0));
+  }
+
   await step('Today and the board still load with everything in place', async () => {
     const t = (await get('/api/today')).data;
     assert.ok(Array.isArray(t.upcomingAuto) && Array.isArray(t.suggestions) && Array.isArray(t.thankYous));
@@ -537,7 +547,9 @@ try {
   console.error(err);
 } finally {
   server?.kill();
-  await mongoose.connection.db?.dropDatabase().catch(() => {});
+  // E2E_KEEP=1 leaves the database for poking at (screenshots); drop it yourself after.
+  if (process.env.E2E_KEEP === '1') console.log(`\nkept database ${DB}`);
+  else await mongoose.connection.db?.dropDatabase().catch(() => {});
   await mongoose.disconnect().catch(() => {});
   console.log(`\n${passed} passed, ${failures.length} failed${failures.length ? `: ${failures.join('; ')}` : ''}`);
   process.exit(failures.length ? 1 : 0);

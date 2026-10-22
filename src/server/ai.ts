@@ -112,7 +112,8 @@ const EMAIL_RULES = `Rules:
 - Link labels must say what the link is ("my resume", "Shotline", "the demo video"), never "here" or "this link": the sender's dashboard reports clicks by label.
 - Keep the sender's voice and language. No clichés ("I hope this email finds you well", "I am writing to", "just circling back"), no emojis unless the draft has them, no exclamation-mark spam.
 - Format the body in markdown: **bold**, *italic*, ++underline++, "- " bullet lists, "1. " numbered lists, blank lines between paragraphs, single newlines for sign-off lines. Use formatting sparingly, the way a person would in Gmail. No headings unless asked.
-- Don't add a signature block (one is appended separately). Keep a short sign-off if the draft has one.
+- Don't add a signature block (one is appended separately). End with just a closing line such as "Best," — the signature carries the name.
+- Never write placeholders like [Your Name], [Company] or [Link]: use what you were given, or leave it out.
 - "notes": one or two short sentences on what you changed or what's missing. Empty if nothing to say.`;
 
 const EMAIL_SCHEMA = {
@@ -152,6 +153,8 @@ export interface EmailDraft {
 
 function finishDraft(raw: Generated, given: string[], originalBody: string): EmailDraft {
   const parsed = JSON.parse(raw.text) as { subject: string; body: string; notes?: string };
+  // Belt and braces: drop a placeholder name line the model added anyway (the signature has the real one).
+  parsed.body = parsed.body.replace(/\n\s*\[(?:your name|name|your full name)\]\s*$/i, '');
   // Links are what we track; flag any the model dropped or made up.
   const before = new Set(originalBody.match(URL_RE) ?? []);
   const allowed = new Set([...before, ...given.flatMap((g) => g.match(URL_RE) ?? [])]);

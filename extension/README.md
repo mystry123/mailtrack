@@ -1,9 +1,8 @@
 # Mailtrack Chrome extension
 
-Stops your own Gmail views of tracked emails from counting as opens.
+- **Save to Mailtrack** on job pages (LinkedIn, Greenhouse, Lever, Ashby, Wellfound, Workable, Workday): reads the company, role, location, description, salary and posting date, and saves the job to your pipeline's Wishlist. On any other page, click the toolbar icon.
+- **Ignores your own opens**: when Gmail shows one of your tracked emails, the tracking pixel is blanked and the server is told it's you.
 
-When Gmail shows one of your tracked emails, the extension blanks the tracking pixel before it loads and tells `track.shotline.in` that you are looking at that email. Any open that still slips through in the next two minutes is marked "You".
+Install: `chrome://extensions` → Developer mode → Load unpacked → this `extension/` folder. After an update, click the reload icon on the extension card. Stay signed in to track.shotline.in in the same Chrome profile (saving uses that session).
 
-Install: Chrome → `chrome://extensions` → turn on **Developer mode** → **Load unpacked** → pick this `extension/` folder. Install it in every Chrome profile where you read this Gmail account.
-
-It only works in desktop Chrome. Opening your Sent mail in the Gmail phone app still counts; use "That was me" for those.
+Reading the page: `extract.js` tries schema.org JobPosting data first (most job sites publish it for Google), then per-site selectors, then the page title. Tests: `extension/extract.test.ts`.
