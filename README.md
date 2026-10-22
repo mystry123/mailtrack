@@ -42,3 +42,4 @@ Separate pm2 app on port 4100 behind nginx. Files in `deploy/`.
 2. `git clone` to `/var/www/mailtrack`, create `.env` from `.env.example`
 3. nginx: copy `deploy/nginx-track.shotline.in.conf` to sites-available, symlink, `nginx -t && systemctl reload nginx`, then `certbot --nginx -d track.shotline.in`
 4. `deploy/deploy.sh` (install, build, pm2 reload or start, health check)
+# mailtrack
