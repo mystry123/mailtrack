@@ -6,6 +6,10 @@ const accountSchema = new Schema(
     name: { type: String, default: '' },
     // Display name used in the From header; falls back to the Google name.
     fromName: { type: String, default: '' },
+    // Markdown, appended under "--" when Compose's "Include signature" is on.
+    signature: { type: String, default: '' },
+    // Background for Gemini: who you are, what you've built, what you're after.
+    aboutMe: { type: String, default: '' },
     refreshTokenEnc: { type: String, required: true },
     scopes: { type: [String], default: [] },
     needsReauth: { type: Boolean, default: false },

@@ -21,6 +21,12 @@ const schema = z.object({
     .enum(['true', 'false'])
     .default('true')
     .transform((s) => s === 'true'),
+  // Gemini on Vertex (same GCP project as shotline's Cue).
+  VERTEX_PROJECT: z.string().default('shotline-511017'),
+  VERTEX_LOCATION: z.string().default('global'),
+  AI_MODEL: z.string().default('gemini-3.1-pro-preview'),
+  // Used when the main model is over its rate limit or failing; empty for none.
+  AI_MODEL_FALLBACK: z.string().default('gemini-2.5-pro'),
   NOTIFY_ON_OPEN: z
     .enum(['true', 'false'])
     .default('false')

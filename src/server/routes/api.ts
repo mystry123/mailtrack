@@ -1,13 +1,15 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import { isValidObjectId, type FilterQuery } from 'mongoose';
 import { z } from 'zod';
+import rateLimit from 'express-rate-limit';
+import { AiUnavailable, enhanceEmail } from '../ai.js';
 import { newToken } from '../crypto.js';
 import { env } from '../env.js';
 import { ReauthRequired, sendGmail } from '../google.js';
 import { logger } from '../logger.js';
 import { AccountModel, EventModel, MessageModel, SettingModel, SIGNALS, type Message } from '../models.js';
 import { recomputeStats } from '../stats.js';
-import { renderBody } from '../../shared/render.js';
+import { renderBody, withSignature } from '../../shared/render.js';
 import { requireSameOrigin, requireSession } from './auth.js';
 
 export const apiRouter = Router();
@@ -37,6 +39,8 @@ apiRouter.get(
       email: env.ALLOWED_EMAIL,
       name: account?.name ?? '',
       fromName: account?.fromName ?? '',
+      signature: account?.signature ?? '',
+      aboutMe: account?.aboutMe ?? '',
       needsReauth: !account || account.needsReauth,
       publicUrl: env.PUBLIC_URL,
     });
@@ -46,8 +50,14 @@ apiRouter.get(
 apiRouter.put(
   '/me',
   h(async (req, res) => {
-    const { fromName } = z.object({ fromName: z.string().trim().max(100) }).parse(req.body);
-    await AccountModel.updateOne({ email: env.ALLOWED_EMAIL }, { fromName });
+    const patch = z
+      .object({
+        fromName: z.string().trim().max(100).optional(),
+        signature: z.string().max(2_000).optional(),
+        aboutMe: z.string().max(5_000).optional(),
+      })
+      .parse(req.body);
+    await AccountModel.updateOne({ email: env.ALLOWED_EMAIL }, patch);
     res.json({ ok: true });
   }),
 );
@@ -113,15 +123,18 @@ const sendSchema = z.object({
   subject: z.string().trim().min(1).max(300),
   body: z.string().min(1).max(50_000),
   label: z.string().trim().max(100).default(''),
+  includeSignature: z.boolean().default(true),
 });
 
 apiRouter.post(
   '/messages/send',
   h(async (req, res) => {
     const input = sendSchema.parse(req.body);
+    const account = await AccountModel.findOne({ email: env.ALLOWED_EMAIL }).lean();
+    const body = input.includeSignature ? withSignature(input.body, account?.signature) : input.body;
     const token = newToken();
     const linkTokens: string[] = [];
-    const rendered = renderBody(input.body, (_link, i) => trackedUrl((linkTokens[i] = newToken())));
+    const rendered = renderBody(body, (_link, i) => trackedUrl((linkTokens[i] = newToken())));
 
     // Saved before sending so an instant open/click has something to attach to.
     const message = await MessageModel.create({
@@ -131,7 +144,7 @@ apiRouter.post(
       to: input.to,
       cc: input.cc,
       subject: input.subject,
-      body: input.body,
+      body,
       html: rendered.html,
       links: rendered.links.map((l, i) => ({ ...l, token: linkTokens[i] })),
       sentAt: new Date(),
@@ -193,5 +206,33 @@ apiRouter.put(
     const links = savedLinksSchema.parse(req.body.links);
     await SettingModel.updateOne({ key: 'savedLinks' }, { value: links }, { upsert: true });
     res.json({ links });
+  }),
+);
+
+const enhanceSchema = z.object({
+  subject: z.string().max(300).default(''),
+  body: z.string().max(20_000).default(''),
+  instruction: z.string().trim().max(1_000).default(''),
+  to: z.string().max(500).default(''),
+  label: z.string().max(100).default(''),
+});
+
+apiRouter.post(
+  '/ai/enhance',
+  rateLimit({ windowMs: 60_000, limit: 15, standardHeaders: true, legacyHeaders: false }),
+  h(async (req, res) => {
+    const input = enhanceSchema.parse(req.body);
+    if (!input.body.trim() && !input.instruction) {
+      return res.status(400).json({ error: 'invalid', message: 'Write a draft or tell Gemini what to write' });
+    }
+    const account = await AccountModel.findOne({ email: env.ALLOWED_EMAIL }).lean();
+    try {
+      const result = await enhanceEmail({ ...input, aboutMe: account?.aboutMe ?? '' });
+      res.json(result);
+    } catch (err) {
+      if (err instanceof AiUnavailable) return res.status(503).json({ error: 'ai_unavailable', message: err.message });
+      logger.error({ err }, 'gemini enhance failed');
+      res.status(502).json({ error: 'ai_failed', message: 'Gemini is busy or failed; try again in a moment' });
+    }
   }),
 );

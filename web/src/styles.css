@@ -555,6 +555,117 @@ nav {
   color: var(--muted);
 }
 
+.field-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.editor {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+.editor:focus-within {
+  border-color: var(--accent);
+}
+.editor textarea {
+  border: 0;
+  border-radius: 0;
+  outline: none;
+  display: block;
+  min-height: 260px;
+}
+.toolbar-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 4px;
+  border-bottom: 1px solid var(--line);
+  background: var(--hover);
+  align-items: center;
+}
+.tool {
+  border: 0;
+  background: transparent;
+  padding: 4px 8px;
+  min-width: 30px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--text);
+}
+.tool:hover {
+  background: var(--surface);
+}
+.tool.b {
+  font-weight: 800;
+}
+.tool.i {
+  font-style: italic;
+  font-family: Georgia, serif;
+}
+.tool.u {
+  text-decoration: underline;
+}
+.tool.s {
+  text-decoration: line-through;
+}
+.tool-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--line);
+  margin: 0 4px;
+}
+.chip-tool {
+  font-size: 12px;
+  color: var(--accent);
+}
+.ai {
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface));
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+.ai-head {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.ai-badge {
+  font-weight: 700;
+  color: var(--accent);
+}
+.ai .chips {
+  margin-bottom: 8px;
+}
+.ai-ask {
+  display: flex;
+  gap: 8px;
+}
+.ai-ask button {
+  white-space: nowrap;
+}
+.ai-result {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.ai-result p {
+  margin: 0 0 4px;
+}
+.check.inline {
+  margin-bottom: 12px;
+  flex-direction: row;
+}
+
 @media (max-width: 760px) {
   .compose {
     grid-template-columns: 1fr;

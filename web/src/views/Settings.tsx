@@ -3,6 +3,8 @@ import { api, type Me, type SavedLink } from '../api';
 
 export function Settings({ me, onSaved }: { me: Me; onSaved: () => void }) {
   const [fromName, setFromName] = useState(me.fromName || me.name);
+  const [signature, setSignature] = useState(me.signature);
+  const [aboutMe, setAboutMe] = useState(me.aboutMe);
   const [links, setLinks] = useState<SavedLink[]>([]);
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
@@ -17,7 +19,7 @@ export function Settings({ me, onSaved }: { me: Me; onSaved: () => void }) {
     setError('');
     setStatus('');
     try {
-      await api('/api/me', { method: 'PUT', body: { fromName } });
+      await api('/api/me', { method: 'PUT', body: { fromName, signature, aboutMe } });
       const clean = links.filter((l) => l.label.trim() || l.url.trim());
       const r = await api<{ links: SavedLink[] }>('/api/saved-links', { method: 'PUT', body: { links: clean } });
       setLinks(r.links);
@@ -39,6 +41,30 @@ export function Settings({ me, onSaved }: { me: Me; onSaved: () => void }) {
         <p className="small muted">
           Sending as {me.email}. <a href="/auth/google">Reconnect Google</a> if sending ever fails.
         </p>
+        <label>
+          Signature
+          <textarea
+            value={signature}
+            onChange={(e) => setSignature(e.target.value)}
+            rows={4}
+            placeholder={'**Ritik Patel**\nFullstack engineer · [Shotline](https://shotline.in)'}
+          />
+        </label>
+        <p className="small muted">Same formatting as Compose. Links in it are tracked too.</p>
+      </div>
+
+      <div className="card form">
+        <h2>About me (for Gemini)</h2>
+        <label>
+          Background Gemini can use, and never goes beyond
+          <textarea
+            value={aboutMe}
+            onChange={(e) => setAboutMe(e.target.value)}
+            rows={6}
+            placeholder="Fullstack engineer. Built Shotline, a browser video editor: timeline, Remotion rendering on Lambda, AI captions, auto-reframe, an AI assistant. Looking for founding / fullstack roles at AI startups."
+          />
+        </label>
+        <p className="small muted">Gemini is told never to invent achievements, so anything you want it to mention belongs here or in the draft.</p>
       </div>
 
       <div className="card form">

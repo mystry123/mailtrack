@@ -52,6 +52,11 @@ else
 fi
 # 2026-10-22: the 60s "your Sent view" window hid real opens; turn it off on existing boxes.
 sed -i 's/^SELF_OPEN_GRACE_SEC=60$/SELF_OPEN_GRACE_SEC=0/' /var/www/mailtrack/.env
+# Gemini (Vertex): reuse shotline backend's Google workload-identity config.
+if ! grep -q '^GOOGLE_APPLICATION_CREDENTIALS=' /var/www/mailtrack/.env; then
+  CREDS=$(grep '^GOOGLE_APPLICATION_CREDENTIALS=' /var/www/shotline/backend/.env | head -1 || true)
+  if [ -n "$CREDS" ]; then echo "$CREDS" >> /var/www/mailtrack/.env; echo "[1] Gemini credentials linked"; else echo "[1] WARNING: no GOOGLE_APPLICATION_CREDENTIALS in shotline backend .env; Gemini will be unavailable"; fi
+fi
 
 cat > /etc/nginx/sites-available/track.shotline.in <<'NGINX'
 __NGINX__NGINX

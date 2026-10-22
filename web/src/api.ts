@@ -59,6 +59,8 @@ export interface Me {
   email: string;
   name: string;
   fromName: string;
+  signature: string;
+  aboutMe: string;
   needsReauth: boolean;
   publicUrl: string;
 }
@@ -91,4 +93,12 @@ export async function api<T>(path: string, init?: { method?: string; body?: unkn
     throw new ApiError(res.status, data.error ?? 'error', msg);
   }
   return data as T;
+}
+
+export interface EnhanceResult {
+  subject: string;
+  body: string;
+  notes: string;
+  model: string;
+  warnings: string[];
 }
