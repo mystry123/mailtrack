@@ -40,7 +40,7 @@ GOOGLE_CLIENT_SECRET=__SEC__
 ALLOWED_EMAIL=__EMAIL__
 SESSION_SECRET=$(openssl rand -hex 32)
 TOKEN_ENC_KEY=$(openssl rand -base64 32)
-SELF_OPEN_GRACE_SEC=60
+SELF_OPEN_GRACE_SEC=0
 NOTIFY_ON_CLICK=true
 NOTIFY_ON_OPEN=false
 ENV
@@ -50,6 +50,8 @@ ENV
 else
   echo "[1] .env already exists, left alone"
 fi
+# 2026-10-22: the 60s "your Sent view" window hid real opens; turn it off on existing boxes.
+sed -i 's/^SELF_OPEN_GRACE_SEC=60$/SELF_OPEN_GRACE_SEC=0/' /var/www/mailtrack/.env
 
 cat > /etc/nginx/sites-available/track.shotline.in <<'NGINX'
 __NGINX__NGINX

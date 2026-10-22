@@ -15,7 +15,8 @@ const schema = z.object({
   // 32 bytes, base64. Encrypts the stored Google refresh token.
   TOKEN_ENC_KEY: z.string().refine((s) => Buffer.from(s, 'base64').length === 32, 'must be 32 bytes base64'),
   // Opens this soon after sending are treated as you viewing your Sent copy.
-  SELF_OPEN_GRACE_SEC: z.coerce.number().default(60),
+  // Off by default: it hid real opens from fast readers.
+  SELF_OPEN_GRACE_SEC: z.coerce.number().default(0),
   NOTIFY_ON_CLICK: z
     .enum(['true', 'false'])
     .default('true')

@@ -51,6 +51,13 @@ async function record(req: Request, message: Message, type: 'open' | 'click', li
   });
 
   const before = type === 'open' ? message.stats?.opens ?? 0 : message.stats?.clicks ?? 0;
+  if (type === 'click' && verdict.signal === 'real') {
+    // A click proves the email was read, so opens set aside only for timing count after all.
+    await EventModel.updateMany(
+      { messageId: message._id, type: 'open', signal: 'self', manual: false, reason: /^within \d+s of sending/ },
+      { signal: 'real', reason: 'a click followed' },
+    );
+  }
   await recomputeStats(message._id);
   if (verdict.signal === 'real' && before === 0) {
     void notifyFirst(message, event.toObject());

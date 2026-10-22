@@ -14,7 +14,7 @@ Every hit is stored as an event with a `signal`, and only `real` counts:
 
 | signal | when |
 | --- | --- |
-| `self` | open within `SELF_OPEN_GRACE_SEC` of sending (your Sent view), or a click carrying the `mt_self` cookie set at sign-in |
+| `self` | a click carrying the `mt_self` cookie set at sign-in; optionally opens within `SELF_OPEN_GRACE_SEC` of sending (default 0 = off; a later real click turns those back into real opens) |
 | `auto` | Apple Mail Privacy Protection prefetch (Apple IP ranges): fires whether or not anyone read it |
 | `bot` | HEAD requests, scanner/preview user agents, clicks within 10s of sending, clicks without `Accept-Language` |
 | `real` | everything else |
