@@ -38,9 +38,6 @@ Google OAuth client: Google Cloud Console → APIs & Services → Credentials �
 
 Separate pm2 app on port 4100 behind nginx. Files in `deploy/`.
 
-1. DNS: `A track.shotline.in → 3.6.143.223`
-2. `git clone` to `/var/www/mailtrack`, create `.env` from `.env.example`
-3. nginx: copy `deploy/nginx-track.shotline.in.conf` to sites-available, symlink, `nginx -t && systemctl reload nginx`, then `certbot --nginx -d track.shotline.in`
-4. `deploy/deploy.sh` (install, build, pm2 reload or start, health check)
-# mailtrack
+- First time: DNS `A track.shotline.in → 3.6.143.223`, then from your Mac `bash deploy/setup-box.sh`. That one SSM command writes the box `.env`, the nginx site and the certificate, then clones, builds and starts the pm2 app.
+- Later: push to main, then re-run `deploy/setup-box.sh` (it leaves the existing `.env` alone), or on the box run `deploy/deploy.sh`.
 # mailtrack

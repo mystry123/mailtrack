@@ -5,11 +5,11 @@
 #   1. creates /var/www/mailtrack and its .env (Mongo URI copied from shotline's
 #      backend .env on the box; session/encryption secrets generated there; Google
 #      client id/secret read from this repo's local .env)
-#   2. creates a GitHub deploy key for the mailtrack repo (prints the public key)
-#   3. adds the nginx site for track.shotline.in (nginx -t before reload)
-#   4. gets a Let's Encrypt cert with certbot --nginx
+#   2. adds the nginx site for track.shotline.in (nginx -t before reload)
+#   3. gets a Let's Encrypt cert with certbot --nginx
+#   4. clones the (public) repo over HTTPS, builds it, starts pm2 app "mailtrack"
 # Shotline's own nginx site, pm2 apps and .env files are not modified.
-# Safe to re-run: an existing .env and deploy key are left alone.
+# Safe to re-run: an existing .env is left alone; the code is reset to origin/main.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -17,12 +17,13 @@ INSTANCE=i-02e37278036b76a67
 REGION=ap-south-1
 ID=$(grep '^GOOGLE_CLIENT_ID=' .env | cut -d= -f2-)
 SEC=$(grep '^GOOGLE_CLIENT_SECRET=' .env | cut -d= -f2-)
-[[ -n "$ID" && "$SEC" == GOCSPX-* ]] || { echo "Google client id/secret missing from .env" >&2; exit 1; }
+EMAIL=$(grep '^ALLOWED_EMAIL=' .env | cut -d= -f2-)
+[[ -n "$ID" && "$SEC" == GOCSPX-* && -n "$EMAIL" ]] || { echo "Google client id/secret or ALLOWED_EMAIL missing from .env" >&2; exit 1; }
 
 PARAMS=$(mktemp)
 trap 'rm -f "$PARAMS"' EXIT
 
-ID="$ID" SEC="$SEC" NGINX_FILE=deploy/nginx-track.shotline.in.conf python3 - "$PARAMS" <<'PYEOF'
+ID="$ID" SEC="$SEC" EMAIL="$EMAIL" NGINX_FILE=deploy/nginx-track.shotline.in.conf python3 - "$PARAMS" <<'PYEOF'
 import json, os, sys
 nginx = open(os.environ['NGINX_FILE']).read()
 script = r'''set -euo pipefail
@@ -36,7 +37,7 @@ PUBLIC_URL=https://track.shotline.in
 MONGODB_URI=$MONGO
 GOOGLE_CLIENT_ID=__ID__
 GOOGLE_CLIENT_SECRET=__SEC__
-ALLOWED_EMAIL=04ritikpatel@gmail.com
+ALLOWED_EMAIL=__EMAIL__
 SESSION_SECRET=$(openssl rand -hex 32)
 TOKEN_ENC_KEY=$(openssl rand -base64 32)
 SELF_OPEN_GRACE_SEC=60
@@ -50,33 +51,46 @@ else
   echo "[1] .env already exists, left alone"
 fi
 
-if [ ! -f /home/ubuntu/.ssh/mailtrack_deploy ]; then
-  sudo -u ubuntu ssh-keygen -q -t ed25519 -N '' -C mailtrack-deploy@shotline-prod -f /home/ubuntu/.ssh/mailtrack_deploy
-  printf '\nHost github-mailtrack\n  HostName github.com\n  User git\n  IdentityFile ~/.ssh/mailtrack_deploy\n  IdentitiesOnly yes\n  StrictHostKeyChecking accept-new\n' >> /home/ubuntu/.ssh/config
-fi
-echo "[2] DEPLOY KEY (add to GitHub repo, read-only): $(cat /home/ubuntu/.ssh/mailtrack_deploy.pub)"
-
 cat > /etc/nginx/sites-available/track.shotline.in <<'NGINX'
 __NGINX__NGINX
 ln -sf /etc/nginx/sites-available/track.shotline.in /etc/nginx/sites-enabled/track.shotline.in
 nginx -t
 systemctl reload nginx
-echo "[3] nginx site added"
+echo "[2] nginx site added"
 
 certbot --nginx -d track.shotline.in --non-interactive --agree-tos --redirect 2>&1 | tail -4
 nginx -t && systemctl reload nginx
-echo "[4] cert done"
-curl -s -o /dev/null -w 'track.shotline.in /health: %{http_code} (502 expected until the app runs)\n' https://track.shotline.in/health || true
+echo "[3] cert done"
+
+sudo -u ubuntu -H bash -lc '
+set -euo pipefail
+cd /var/www/mailtrack
+if [ ! -d .git ]; then git init -q -b main; git remote add origin https://github.com/mystry123/mailtrack.git; fi
+git fetch -q origin
+git checkout -q -B main origin/main
+pnpm install --frozen-lockfile 2>&1 | tail -2
+pnpm build 2>&1 | tail -2
+if pm2 describe mailtrack >/dev/null 2>&1; then pm2 reload mailtrack --update-env; else pm2 start deploy/ecosystem.config.cjs; fi
+pm2 save
+for i in $(seq 1 20); do curl -fsS http://127.0.0.1:4100/health && echo && break; sleep 1; done
+'
+echo "[4] app started"
+curl -s -o /dev/null -w 'https://track.shotline.in/app/: %{http_code}\n' https://track.shotline.in/app/ || true
 curl -s -o /dev/null -w 'shotline.in still: %{http_code}\n' https://shotline.in/ || true
 '''
-script = script.replace('__ID__', os.environ['ID']).replace('__SEC__', os.environ['SEC']).replace('__NGINX__', nginx)
+script = script.replace('__ID__', os.environ['ID']).replace('__SEC__', os.environ['SEC']).replace('__EMAIL__', os.environ['EMAIL']).replace('__NGINX__', nginx)
 json.dump({'commands': [script]}, open(sys.argv[1], 'w'))
 PYEOF
 
 CMD=$(aws ssm send-command --region "$REGION" --instance-ids "$INSTANCE" \
   --document-name AWS-RunShellScript --comment "mailtrack box setup" \
-  --parameters "file://$PARAMS" --query Command.CommandId --output text)
-echo "SSM command $CMD sent; waiting..."
-aws ssm wait command-executed --region "$REGION" --instance-id "$INSTANCE" --command-id "$CMD" || true
+  --timeout-seconds 900 --parameters "file://$PARAMS" --query Command.CommandId --output text)
+echo "SSM command $CMD sent; waiting (install + build take a few minutes)..."
+# `aws ssm wait` gives up after ~100s; poll until the command finishes instead.
+while true; do
+  STATUS=$(aws ssm get-command-invocation --region "$REGION" --instance-id "$INSTANCE" --command-id "$CMD" \
+    --query Status --output text 2>/dev/null || echo Pending)
+  case "$STATUS" in Pending|InProgress|Delayed) sleep 10 ;; *) break ;; esac
+done
 aws ssm get-command-invocation --region "$REGION" --instance-id "$INSTANCE" --command-id "$CMD" \
   --query '[Status,StandardOutputContent,StandardErrorContent]' --output text
