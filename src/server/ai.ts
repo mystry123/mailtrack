@@ -1,5 +1,6 @@
 import { GoogleAuth } from 'google-auth-library';
 import { env } from './env.js';
+import { fakeAi } from './fakes.js';
 import { logger } from './logger.js';
 
 // Gemini on Vertex AI, same project as shotline's Cue. Credentials come from
@@ -13,6 +14,8 @@ export class AiUnavailable extends Error {}
 class Retryable extends Error {}
 
 interface GenerateRequest {
+  // What this call is for (test fakes answer by kind).
+  kind: 'email' | 'followup' | 'thankyou' | 'referral' | 'reply' | 'prep' | 'people' | 'brief';
   system: string;
   prompt: string;
   // Answer as JSON matching this Vertex schema.
@@ -89,6 +92,7 @@ async function callVertex(model: string, req: GenerateRequest): Promise<Omit<Gen
 
 // The main model twice (rate limits are bursty), then the fallback.
 async function generate(req: GenerateRequest): Promise<Generated> {
+  if (env.FAKE_AI) return { text: fakeAi(req.kind, `${req.system}\n${req.prompt}`), sources: [], model: 'fake' };
   const models = [env.AI_MODEL, env.AI_MODEL, ...(env.AI_MODEL_FALLBACK ? [env.AI_MODEL_FALLBACK] : [])];
   for (const [i, model] of models.entries()) {
     try {
@@ -188,7 +192,7 @@ ${EMAIL_RULES}`;
   ]
     .filter(Boolean)
     .join('\n\n');
-  const raw = await generate({ system, prompt, schema: EMAIL_SCHEMA });
+  const raw = await generate({ kind: 'email', system, prompt, schema: EMAIL_SCHEMA });
   return finishDraft(raw, [input.instruction, input.aboutMe, input.job?.jobDescription ?? '', input.job?.jobUrl ?? ''], input.body);
 }
 
@@ -220,7 +224,7 @@ ${EMAIL_RULES}`;
   ]
     .filter(Boolean)
     .join('\n\n');
-  const raw = await generate({ system, prompt, schema: EMAIL_SCHEMA });
+  const raw = await generate({ kind: 'followup', system, prompt, schema: EMAIL_SCHEMA });
   return finishDraft(raw, [input.original.body, input.aboutMe, input.instruction ?? ''], '');
 }
 
@@ -235,7 +239,7 @@ export async function companyBrief(job: JobContext): Promise<Brief> {
 **What they do** (2 sentences), **Product & customers**, **Stage & funding** (with dates), **Recent news** (last 6 months, 2-4 bullets with dates), **Tech & team** (only what's public), **Angles for outreach** (2-3 bullets: concrete things the candidate could mention).
 Use only what search results support; write "not found" rather than guessing. Under 250 words. No preamble.`;
   const prompt = jobBlock(job) || 'No company given.';
-  const raw = await generate({ system, prompt, search: true });
+  const raw = await generate({ kind: 'brief', system, prompt, search: true });
   return { text: raw.text, sources: raw.sources.slice(0, 8), model: raw.model };
 }
 
@@ -250,10 +254,106 @@ likely questions to rehearse (tied to the role and the candidate's real experien
 Each item is one line, imperative, specific to this company and role. Never invent facts about the candidate.`;
   const prompt = [aboutMe && `About the candidate:\n${aboutMe}`, jobBlock(job), brief && `Company brief:\n${brief}`].filter(Boolean).join('\n\n');
   const raw = await generate({
+    kind: 'prep',
     system,
     prompt,
     schema: { type: 'OBJECT', properties: { items: { type: 'ARRAY', items: { type: 'STRING' } } }, required: ['items'] },
   });
   const parsed = JSON.parse(raw.text) as { items: string[] };
   return { items: parsed.items.map((s) => s.trim()).filter(Boolean).slice(0, 15), model: raw.model };
+}
+
+export interface ReplyReading {
+  summary: string;
+  suggestedStage: string;
+}
+
+const REPLY_STAGES = ['replied', 'screening', 'interviewing', 'offer', 'rejected'];
+
+// One-line summary of a reply and the stage it implies.
+export async function readReply(input: { text: string; subject: string; company?: string; role?: string }): Promise<ReplyReading> {
+  const system = `You read a reply to a job seeker's outreach email and return:
+- "summary": one short sentence on what they said and any concrete next step, with dates/times if given (e.g. "Wants a 30-min call Thu 3pm IST").
+- "suggestedStage": one of ${REPLY_STAGES.join(', ')}. "screening" = intro/recruiter call proposed; "interviewing" = technical/onsite interview scheduled; "offer" = an offer; "rejected" = a no; otherwise "replied".`;
+  const prompt = [input.company && `Company: ${input.company}`, input.role && `Role: ${input.role}`, `Original subject: ${input.subject}`, `Their reply:\n${input.text}`]
+    .filter(Boolean)
+    .join('\n\n');
+  const raw = await generate({
+    kind: 'reply',
+    system,
+    prompt,
+    schema: {
+      type: 'OBJECT',
+      properties: { summary: { type: 'STRING' }, suggestedStage: { type: 'STRING', enum: REPLY_STAGES } },
+      required: ['summary', 'suggestedStage'],
+    },
+  });
+  const parsed = JSON.parse(raw.text) as ReplyReading;
+  return {
+    summary: String(parsed.summary ?? '').slice(0, 300),
+    suggestedStage: REPLY_STAGES.includes(parsed.suggestedStage) ? parsed.suggestedStage : 'replied',
+  };
+}
+
+export async function draftThankYou(input: { job: JobContext; interviewTitle: string; interviewers: string; aboutMe: string; notes: string }): Promise<EmailDraft> {
+  const system = `You write a short thank-you email a candidate sends a few hours after an interview.
+- 3 to 5 sentences: thank them, recall one specific topic from the interview notes if any (never invent one), restate genuine interest in one line, sign off.
+- Subject: "Thank you – " + the role or interview title.
+${EMAIL_RULES}`;
+  const prompt = [
+    input.aboutMe && `About me:\n${input.aboutMe}`,
+    jobBlock(input.job),
+    `Interview: ${input.interviewTitle}`,
+    input.interviewers && `Interviewers: ${input.interviewers}`,
+    input.notes && `My notes on this company:\n${input.notes}`,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+  const raw = await generate({ kind: 'thankyou', system, prompt, schema: EMAIL_SCHEMA });
+  return finishDraft(raw, [input.aboutMe, input.notes], '');
+}
+
+export async function draftReferralAsk(input: {
+  contact: { name: string; title: string; relationship: string; notes: string };
+  job: JobContext;
+  aboutMe: string;
+}): Promise<EmailDraft> {
+  const system = `You write a short, warm email asking someone for a referral to a specific role at their company.
+- Match the relationship: a friend or ex-colleague gets a casual note; a stranger gets a respectful, specific one.
+- 4 to 6 sentences: why this role, one or two concrete proofs from the sender's background, a clear and easy ask (refer me / point me to the right person), an easy out.
+- Include the job link if given.
+${EMAIL_RULES}`;
+  const prompt = [
+    input.aboutMe && `About me (the sender):\n${input.aboutMe}`,
+    `Contact: ${input.contact.name}${input.contact.title ? `, ${input.contact.title}` : ''} (relationship: ${input.contact.relationship})`,
+    input.contact.notes && `Notes on them: ${input.contact.notes}`,
+    jobBlock(input.job),
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+  const raw = await generate({ kind: 'referral', system, prompt, schema: EMAIL_SCHEMA });
+  return finishDraft(raw, [input.aboutMe, input.job.jobUrl ?? '', input.job.jobDescription ?? ''], '');
+}
+
+export interface FoundPerson {
+  name: string;
+  title: string;
+}
+
+// People at the company worth emailing for this role (founders, hiring managers), via Google Search.
+export async function findPeople(job: JobContext): Promise<{ people: FoundPerson[]; sources: { title: string; url: string }[] }> {
+  const system = `Using Google Search, find up to 5 real people at the company a job seeker should email about the role: founders/CEO/CTO at small startups, otherwise the likely hiring manager, engineering lead or recruiter.
+Only people search results show currently work there. Answer with JSON only, no prose: {"people":[{"name":"…","title":"…"}]}`;
+  const raw = await generate({ kind: 'people', system, prompt: jobBlock(job) || 'No company given.', search: true });
+  const json = raw.text.match(/\{[\s\S]*\}/)?.[0] ?? '{}';
+  let people: FoundPerson[] = [];
+  try {
+    people = ((JSON.parse(json) as { people?: FoundPerson[] }).people ?? [])
+      .filter((p) => p && typeof p.name === 'string' && p.name.trim())
+      .map((p) => ({ name: p.name.trim(), title: String(p.title ?? '').trim() }))
+      .slice(0, 5);
+  } catch {
+    people = [];
+  }
+  return { people, sources: raw.sources.slice(0, 6) };
 }

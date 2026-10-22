@@ -15,6 +15,15 @@ const accountSchema = new Schema(
     weeklyGoal: { type: Number, default: 20 },
     // Working days without a reply before a follow-up is due.
     followUpDays: { type: Number, default: 4 },
+    // Auto follow-up sequence offered in Compose: working days after the first email.
+    sequenceDays: { type: [Number], default: [4, 9] },
+    sequenceByDefault: { type: Boolean, default: true },
+    // Emails per day (including scheduled and automatic follow-ups). Protects your Gmail reputation.
+    dailyCap: { type: Number, default: 50 },
+    timezone: { type: String, default: 'Asia/Kolkata' },
+    weeklyDigest: { type: Boolean, default: true },
+    lastDigestAt: Date,
+    calendarSyncedAt: Date,
     refreshTokenEnc: { type: String, required: true },
     scopes: { type: [String], default: [] },
     needsReauth: { type: Boolean, default: false },
@@ -62,6 +71,39 @@ const messageSchema = new Schema(
     applicationId: { type: Schema.Types.ObjectId, ref: 'Application', index: true },
     // Set on follow-ups: the email this one follows up on (same Gmail thread).
     followUpOf: { type: Schema.Types.ObjectId, ref: 'Message' },
+    // Sent by an automatic follow-up sequence (rather than by hand).
+    automatic: { type: Boolean, default: false },
+    // On first emails: follow-ups that go out unless someone replies.
+    sequence: {
+      type: new Schema(
+        {
+          status: { type: String, enum: ['active', 'stopped', 'done'], default: 'active' },
+          stopReason: String,
+          steps: {
+            type: [
+              new Schema({
+                afterDays: { type: Number, required: true },
+                dueAt: { type: Date, required: true },
+                status: { type: String, enum: ['pending', 'sent', 'skipped', 'cancelled'], default: 'pending' },
+                subject: { type: String, default: '' },
+                body: { type: String, default: '' },
+                draftedAt: Date,
+                // You changed the draft: never overwrite it with a new one.
+                edited: { type: Boolean, default: false },
+                messageId: { type: Schema.Types.ObjectId, ref: 'Message' },
+                error: String,
+              }),
+            ],
+            default: [],
+          },
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
+    // No tracking pixel: for important one-to-one emails (clicks and replies still count).
+    trackOpens: { type: Boolean, default: true },
+    templateId: { type: Schema.Types.ObjectId, ref: 'Template' },
     // scheduled → sending → sent; or failed / cancelled. Old messages have no status (= sent).
     status: { type: String, enum: ['scheduled', 'sending', 'sent', 'failed', 'cancelled'], default: 'sent' },
     scheduledAt: Date,
@@ -105,8 +147,11 @@ const eventSchema = new Schema(
   {
     messageId: { type: Schema.Types.ObjectId, ref: 'Message', required: true, index: true },
     type: { type: String, enum: ['open', 'click', 'reply'], required: true },
-    // Replies: who wrote back.
+    // Replies: who wrote back, and (with read access) what Gemini made of it.
     from: String,
+    summary: String,
+    suggestedStage: String,
+    gmailId: String,
     linkToken: String,
     at: { type: Date, required: true },
     ip: String,
@@ -151,6 +196,22 @@ const applicationSchema = new Schema(
     contacts: { type: [contactSchema], default: [] },
     notes: { type: [noteSchema], default: [] },
     interviewAt: Date,
+    // From Google Calendar: events that look like interviews for this company.
+    interviews: {
+      type: [
+        new Schema(
+          { eventId: String, title: String, start: Date, end: Date, attendees: [String], matchedBy: String, thankYouDone: { type: Boolean, default: false } },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
+    // Interviews you've sent (or skipped) a thank-you for: calendar event ids, or "manual:<interviewAt>".
+    thankYous: { type: [String], default: [] },
+    // A stage change Gemini proposes after reading a reply; you accept or dismiss it.
+    suggestion: { stage: String, reason: String, at: Date },
+    // Captured from the job page: how old the posting is, reposts, salary shown.
+    posting: { postedAt: Date, reposted: Boolean, salary: String, capturedAt: Date, source: String },
     // Hide follow-up nudges until then.
     snoozedUntil: Date,
     brief: { text: String, sources: [{ title: String, url: String, _id: false }], at: Date },
@@ -160,6 +221,22 @@ const applicationSchema = new Schema(
   { timestamps: true },
 );
 applicationSchema.index({ archived: 1, updatedAt: -1 });
+
+const contactSchema2 = new Schema(
+  {
+    name: { type: String, default: '' },
+    email: { type: String, default: '', lowercase: true, trim: true },
+    company: { type: String, default: '' },
+    title: { type: String, default: '' },
+    linkedin: { type: String, default: '' },
+    relationship: { type: String, enum: ['referral', 'recruiter', 'hiring_manager', 'founder', 'friend', 'other'], default: 'other' },
+    notes: { type: String, default: '' },
+    applicationIds: { type: [Schema.Types.ObjectId], default: [] },
+    lastContactAt: Date,
+  },
+  { timestamps: true },
+);
+contactSchema2.index({ email: 1 }, { unique: true, partialFilterExpression: { email: { $gt: '' } } });
 
 const templateSchema = new Schema(
   { name: { type: String, required: true }, subject: { type: String, default: '' }, body: { type: String, default: '' } },
@@ -175,6 +252,7 @@ export type Account = InferSchemaType<typeof accountSchema>;
 export type Message = InferSchemaType<typeof messageSchema> & { _id: Types.ObjectId };
 export type TrackEvent = InferSchemaType<typeof eventSchema> & { _id: Types.ObjectId };
 export type Application = InferSchemaType<typeof applicationSchema> & { _id: Types.ObjectId };
+export type Contact = InferSchemaType<typeof contactSchema2> & { _id: Types.ObjectId };
 
 export const AccountModel = mongoose.model('Account', accountSchema);
 export const MessageModel = mongoose.model('Message', messageSchema);
@@ -182,3 +260,4 @@ export const EventModel = mongoose.model('Event', eventSchema);
 export const SettingModel = mongoose.model('Setting', settingSchema);
 export const ApplicationModel = mongoose.model('Application', applicationSchema);
 export const TemplateModel = mongoose.model('Template', templateSchema);
+export const ContactModel = mongoose.model('Contact', contactSchema2);

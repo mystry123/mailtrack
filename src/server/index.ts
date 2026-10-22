@@ -9,6 +9,7 @@ import { env, runJobs } from './env.js';
 import { logger } from './logger.js';
 import { apiRouter } from './routes/api.js';
 import { applicationsRouter } from './routes/applications.js';
+import { contactsRouter } from './routes/contacts.js';
 import { startJobs } from './jobs.js';
 import { authRouter } from './routes/auth.js';
 import { trackRouter } from './routes/track.js';
@@ -39,6 +40,11 @@ app.get('/health', (_req, res) => {
 app.use(trackRouter);
 app.use('/auth', express.json({ limit: '10kb' }), authRouter);
 app.use('/api/applications', express.json({ limit: '200kb' }), applicationsRouter);
+app.use('/api/contacts', express.json({ limit: '50kb' }), contactsRouter);
+if (env.NODE_ENV === 'test') {
+  const { testingRouter } = await import('./routes/testing.js');
+  app.use('/api/test', express.json(), testingRouter);
+}
 app.use('/api', express.json({ limit: '200kb' }), apiRouter);
 
 const webDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../web');
@@ -58,7 +64,7 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
 });
 
 async function main() {
-  await mongoose.connect(env.MONGODB_URI, { dbName: 'mailtrack' });
+  await mongoose.connect(env.MONGODB_URI, { dbName: env.MONGODB_DB });
   await mongoose.syncIndexes();
   if (runJobs) startJobs();
   else logger.info('background jobs off (not production; set RUN_JOBS=true to enable)');

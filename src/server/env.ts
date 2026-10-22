@@ -7,6 +7,8 @@ const schema = z.object({
   // links embed it, so changing it later breaks links in already-sent emails.
   PUBLIC_URL: z.string().url().transform((s) => s.replace(/\/$/, '')),
   MONGODB_URI: z.string().min(1),
+  // Tests point this at a throwaway database.
+  MONGODB_DB: z.string().default('mailtrack'),
   GOOGLE_CLIENT_ID: z.string().min(1),
   GOOGLE_CLIENT_SECRET: z.string().min(1),
   // The only Google account allowed to sign in (and the one mail is sent from).
@@ -30,6 +32,18 @@ const schema = z.object({
   AI_MODEL: z.string().default('gemini-3.1-pro-preview'),
   // Used when the main model is over its rate limit or failing; empty for none.
   AI_MODEL_FALLBACK: z.string().default('gemini-2.5-pro'),
+  // Test mode: Gmail/Calendar and Gemini are replaced by in-database fakes
+  // (src/server/fakes.ts). Refused in production.
+  FAKE_GOOGLE: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((s) => s === 'true'),
+  FAKE_AI: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((s) => s === 'true'),
+  // Optional: Hunter.io key for verified email lookups in the people finder.
+  HUNTER_API_KEY: z.string().optional(),
   NOTIFY_ON_OPEN: z
     .enum(['true', 'false'])
     .default('false')
@@ -43,5 +57,9 @@ if (!parsed.success) {
 }
 
 export const env = parsed.data;
+if (env.NODE_ENV === 'production' && (env.FAKE_GOOGLE || env.FAKE_AI || env.MONGODB_DB !== 'mailtrack')) {
+  console.error('Refusing to start: test fakes or a non-production database in production');
+  process.exit(1);
+}
 export const isProd = env.NODE_ENV === 'production';
 export const runJobs = env.RUN_JOBS ? env.RUN_JOBS === 'true' : isProd;

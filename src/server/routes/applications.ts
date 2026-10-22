@@ -2,10 +2,11 @@ import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { isValidObjectId, Types } from 'mongoose';
 import { z } from 'zod';
-import { AiUnavailable, companyBrief, interviewPrep } from '../ai.js';
+import { AiUnavailable, companyBrief, findPeople, interviewPrep } from '../ai.js';
+import { domainAcceptsMail, domainFromUrl, guessEmails, hunterFind } from '../finder.js';
 import { env } from '../env.js';
 import { logger } from '../logger.js';
-import { AccountModel, ApplicationModel, EventModel, MessageModel } from '../models.js';
+import { AccountModel, ApplicationModel, ContactModel, EventModel, MessageModel } from '../models.js';
 import { applyManualStage, createApplication } from '../pipeline.js';
 import { SOURCES, STAGES } from '../../shared/stages.js';
 import { requireSameOrigin, requireSession } from './auth.js';
@@ -159,6 +160,46 @@ applicationsRouter.post(
   }),
 );
 
+// From the Chrome extension's "Save to Mailtrack" button on a job page.
+const captureSchema = z.object({
+  url: z.string().trim().url().max(2_000),
+  company: z.string().trim().min(1).max(100),
+  role: z.string().trim().max(150).default(''),
+  location: z.string().trim().max(150).default(''),
+  description: z.string().max(30_000).default(''),
+  salary: z.string().trim().max(100).default(''),
+  postedAt: z.coerce.date().optional(),
+  reposted: z.boolean().default(false),
+  site: z.string().trim().max(60).default(''),
+});
+
+const SOURCE_BY_SITE: Record<string, string> = { linkedin: 'linkedin', greenhouse: 'careers_page', lever: 'careers_page', ashby: 'careers_page', wellfound: 'job_board', workable: 'careers_page' };
+
+applicationsRouter.post(
+  '/capture',
+  h(async (req, res) => {
+    const input = captureSchema.parse(req.body);
+    const url = input.url.split('#')[0];
+    const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    let app =
+      (await ApplicationModel.findOne({ jobUrl: url })) ??
+      (input.role ? await ApplicationModel.findOne({ company: new RegExp(`^${escape(input.company)}$`, 'i'), role: new RegExp(`^${escape(input.role)}$`, 'i') }) : null);
+    const created = !app;
+    if (!app) {
+      app = createApplication({ company: input.company, role: input.role, source: SOURCE_BY_SITE[input.site] ?? 'job_board' }, 'wishlist');
+    }
+    app.set({
+      jobUrl: app.jobUrl || url,
+      location: app.location || input.location,
+      salary: app.salary || input.salary,
+      jobDescription: app.jobDescription || input.description,
+      posting: { postedAt: input.postedAt, reposted: input.reposted, salary: input.salary, capturedAt: new Date(), source: input.site },
+    });
+    await app.save();
+    res.json({ application: { _id: app._id, company: app.company, role: app.role, stage: app.stage }, created });
+  }),
+);
+
 applicationsRouter.post(
   '/',
   h(async (req, res) => {
@@ -287,5 +328,79 @@ applicationsRouter.post(
     } catch (err) {
       aiError(res, err);
     }
+  }),
+);
+
+applicationsRouter.post(
+  '/:id/suggestion/accept',
+  h(async (req, res) => {
+    const app = await load(req.params.id);
+    if (!app?.suggestion?.stage) return res.status(404).json({ error: 'not found', message: 'No suggestion' });
+    const stage = z.enum(STAGES).parse(app.suggestion.stage);
+    applyManualStage(app, stage);
+    app.set('suggestion', undefined);
+    await app.save();
+    res.json({ application: app });
+  }),
+);
+
+applicationsRouter.post(
+  '/:id/suggestion/dismiss',
+  h(async (req, res) => {
+    const app = await load(req.params.id);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    app.set('suggestion', undefined);
+    await app.save();
+    res.json({ ok: true });
+  }),
+);
+
+applicationsRouter.post(
+  '/:id/thankyou-done',
+  h(async (req, res) => {
+    const { key } = z.object({ key: z.string().min(1).max(200) }).parse(req.body);
+    const r = await ApplicationModel.updateOne({ _id: req.params.id }, { $addToSet: { thankYous: key } });
+    if (!r.matchedCount) return res.status(404).json({ error: 'not found' });
+    res.json({ ok: true });
+  }),
+);
+
+// Who to email at the company, with likely addresses.
+applicationsRouter.post(
+  '/:id/people',
+  aiLimit,
+  h(async (req, res) => {
+    const app = await load(req.params.id);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const { domain: given, name } = z.object({ domain: z.string().trim().max(200).default(''), name: z.string().trim().max(100).default('') }).parse(req.body);
+    // Domain: what you typed, else the job link's site (when it isn't a job board), else past recipients.
+    const BOARDS = /linkedin|greenhouse|lever|ashbyhq|wellfound|workable|indeed|naukri|instahyre|ycombinator/;
+    const past = await MessageModel.find({ applicationId: app._id, kind: 'email' }).select('to').lean();
+    const pastEmails = past.flatMap((m) => m.to.map((r) => ({ email: (r.email ?? '').toLowerCase(), name: r.name ?? '' })));
+    const fromJob = app.jobUrl ? domainFromUrl(app.jobUrl) : '';
+    const domain = domainFromUrl(given) || (fromJob && !BOARDS.test(fromJob) ? fromJob : '') || pastEmails[0]?.email.split('@')[1] || '';
+    let people: { name: string; title: string }[] = name ? [{ name, title: '' }] : [];
+    let sources: { title: string; url: string }[] = [];
+    if (!name) {
+      try {
+        ({ people, sources } = await findPeople({ company: app.company, role: app.role, jobUrl: app.jobUrl }));
+      } catch (err) {
+        if (err instanceof AiUnavailable) return res.status(503).json({ error: 'ai_unavailable', message: err.message });
+        logger.warn({ err }, 'people search failed');
+      }
+    }
+    if (!domain) return res.json({ domain: '', mailOk: false, people: people.map((p) => ({ ...p, emails: [] })), sources, needDomain: true });
+    const known = [...pastEmails, ...(await ContactModel.find({ email: new RegExp(`@${domain.replace(/\./g, '\\.')}$`) }).select('email name').lean())].filter(
+      (k) => k.email.endsWith(`@${domain}`) && k.name,
+    );
+    const mailOk = await domainAcceptsMail(domain);
+    const withEmails = await Promise.all(
+      people.map(async (p) => {
+        const hunter = await hunterFind(p.name, domain);
+        const guesses = guessEmails(p.name, domain, known).slice(0, 4);
+        return { ...p, emails: hunter ? [hunter, ...guesses.filter((g) => g.email !== hunter.email)].slice(0, 4) : guesses };
+      }),
+    );
+    res.json({ domain, mailOk, people: withEmails, sources });
   }),
 );

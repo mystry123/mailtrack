@@ -2,16 +2,20 @@ import { Router, type NextFunction, type Request, type Response } from 'express'
 import rateLimit from 'express-rate-limit';
 import { isValidObjectId, type FilterQuery } from 'mongoose';
 import { z } from 'zod';
-import { AiUnavailable, draftFollowUp, enhanceEmail } from '../ai.js';
+import { AiUnavailable, draftFollowUp, draftReferralAsk, draftThankYou, enhanceEmail } from '../ai.js';
+import { syncCalendar } from '../calendar.js';
+import { buildDigest, sendDigest } from '../digest.js';
 import { newToken } from '../crypto.js';
-import { createEmail, deliver, sendFailure, trackedUrl } from '../delivery.js';
+import { assertUnderCap, createEmail, deliver, sendFailure, sentInLastDay, trackedUrl } from '../delivery.js';
 import { env } from '../env.js';
-import { METADATA_SCOPE } from '../google.js';
-import { checkReplies } from '../jobs.js';
+import { CALENDAR_SCOPE, METADATA_SCOPE, READ_SCOPE } from '../google.js';
+import { checkReplies, sendSequenceStep } from '../jobs.js';
+import { tickSequences } from '../sequences.js';
 import { logger } from '../logger.js';
 import {
   AccountModel,
   ApplicationModel,
+  ContactModel,
   EventModel,
   MessageModel,
   SettingModel,
@@ -63,6 +67,15 @@ apiRouter.get(
       weeklyGoal: account?.weeklyGoal ?? 20,
       followUpDays: account?.followUpDays ?? 4,
       replyDetection: (account?.scopes ?? []).includes(METADATA_SCOPE),
+      replyReading: (account?.scopes ?? []).includes(READ_SCOPE),
+      calendarSync: (account?.scopes ?? []).includes(CALENDAR_SCOPE),
+      calendarSyncedAt: account?.calendarSyncedAt,
+      sequenceDays: account?.sequenceDays ?? [4, 9],
+      sequenceByDefault: account?.sequenceByDefault ?? true,
+      dailyCap: account?.dailyCap ?? 50,
+      sentToday: await sentInLastDay(),
+      timezone: account?.timezone ?? 'Asia/Kolkata',
+      weeklyDigest: account?.weeklyDigest ?? true,
       needsReauth: !account || account.needsReauth,
       publicUrl: env.PUBLIC_URL,
     });
@@ -78,6 +91,21 @@ apiRouter.put(
         signature: z.string().max(2_000).optional(),
         aboutMe: z.string().max(5_000).optional(),
         weeklyGoal: z.number().int().min(0).max(200).optional(),
+        sequenceDays: z.array(z.number().int().min(1).max(60)).max(3).optional(),
+        sequenceByDefault: z.boolean().optional(),
+        dailyCap: z.number().int().min(0).max(500).optional(),
+        timezone: z
+          .string()
+          .refine((tz) => {
+            try {
+              new Intl.DateTimeFormat('en-US', { timeZone: tz });
+              return true;
+            } catch {
+              return false;
+            }
+          }, 'unknown time zone')
+          .optional(),
+        weeklyDigest: z.boolean().optional(),
         followUpDays: z.number().int().min(1).max(30).optional(),
       })
       .parse(req.body);
@@ -212,6 +240,11 @@ const sendSchema = z.object({
   applicationId: objectId.optional(),
   newApplication: newApplication.optional(),
   followUpOf: objectId.optional(),
+  trackOpens: z.boolean().default(true),
+  templateId: objectId.optional(),
+  sequenceDays: z.array(z.number().int().min(1).max(60)).max(3).optional(),
+  // A thank-you for this interview: marks it done once sent.
+  thankYouFor: z.object({ applicationId: objectId, key: z.string().min(1).max(200) }).optional(),
   scheduledAt: z.coerce
     .date()
     .refine((d) => d.getTime() > Date.now() - 60_000, 'must be in the future')
@@ -237,52 +270,34 @@ apiRouter.post(
       if (!parent) return res.status(404).json({ error: 'not found', message: 'The original email is gone' });
       applicationId ??= parent.applicationId ? String(parent.applicationId) : undefined;
     }
+    if (!input.scheduledAt) {
+      try {
+        await assertUnderCap();
+      } catch (err) {
+        const f = sendFailure(err);
+        return res.status(f.status).json(f);
+      }
+    }
     applicationId = await resolveApplication({ applicationId, newApplication: input.newApplication });
 
-    const message = await createEmail({ ...input, applicationId });
-    if (input.scheduledAt) return res.json({ message: { _id: message._id, status: 'scheduled' } });
+    const message = await createEmail({ ...input, applicationId, sequenceDays: input.followUpOf ? undefined : input.sequenceDays });
+    const markThankYou = async () => {
+      if (input.thankYouFor) await ApplicationModel.updateOne({ _id: input.thankYouFor.applicationId }, { $addToSet: { thankYous: input.thankYouFor.key } });
+    };
+    if (input.scheduledAt) {
+      await markThankYou();
+      return res.json({ message: { _id: message._id, status: 'scheduled' } });
+    }
 
     try {
       await deliver(message);
+      await markThankYou();
       res.json({ message: { _id: message._id, status: 'sent' } });
     } catch (err) {
       await MessageModel.deleteOne({ _id: message._id });
       const f = sendFailure(err);
       res.status(f.status).json(f);
     }
-  }),
-);
-
-// Before sending: have you already contacted this person, their company domain, or this company?
-const PUBLIC_DOMAINS = new Set(['gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com', 'yahoo.com', 'icloud.com', 'proton.me', 'protonmail.com', 'live.com']);
-
-apiRouter.get(
-  '/contacts/check',
-  h(async (req, res) => {
-    const emails = String(req.query.emails ?? '')
-      .split(',')
-      .map((e) => e.trim().toLowerCase())
-      .filter((e) => /@/.test(e))
-      .slice(0, 20);
-    const company = String(req.query.company ?? '').trim();
-    const domains = [...new Set(emails.map((e) => e.split('@')[1]).filter((d) => d && !PUBLIC_DOMAINS.has(d)))];
-    const or: FilterQuery<Message>[] = [];
-    if (emails.length) or.push({ 'to.email': { $in: emails.map((e) => new RegExp(`^${escapeRx(e)}$`, 'i')) } });
-    for (const d of domains) or.push({ 'to.email': new RegExp(`@${escapeRx(d)}$`, 'i') });
-    const messages = or.length
-      ? await MessageModel.find({ kind: 'email', status: { $in: ['sent', 'scheduled', null] }, $or: or })
-          .select('subject to sentAt stats status applicationId')
-          .sort({ sentAt: -1 })
-          .limit(5)
-          .lean()
-      : [];
-    const applications = company
-      ? await ApplicationModel.find({ company: new RegExp(`^${escapeRx(company)}$`, 'i') })
-          .select('company role stage')
-          .limit(5)
-          .lean()
-      : [];
-    res.json({ messages, applications });
   }),
 );
 
@@ -428,4 +443,184 @@ apiRouter.post(
       aiFailure(res, err);
     }
   }),
+);
+
+// ---------- automatic follow-up sequences ----------
+
+const stepIndex = (req: Request) => Number(req.params.i);
+
+async function loadSequenceRoot(req: Request, res: Response) {
+  if (!isValidObjectId(req.params.id)) {
+    res.status(404).json({ error: 'not found' });
+    return null;
+  }
+  const root = await MessageModel.findById(req.params.id);
+  if (!root?.sequence) {
+    res.status(404).json({ error: 'not found', message: 'This email has no automatic follow-ups' });
+    return null;
+  }
+  return root;
+}
+
+// Start automatic follow-ups on an email that was sent without them.
+apiRouter.post(
+  '/messages/:id/sequence',
+  h(async (req, res) => {
+    if (!isValidObjectId(req.params.id)) return res.status(404).json({ error: 'not found' });
+    const { days } = z.object({ days: z.array(z.number().int().min(1).max(60)).min(1).max(3) }).parse(req.body);
+    const root = await MessageModel.findById(req.params.id);
+    if (!root || root.kind !== 'email' || root.followUpOf) return res.status(400).json({ error: 'invalid', message: 'Only first emails can have automatic follow-ups' });
+    if (root.status && root.status !== 'sent') return res.status(400).json({ error: 'invalid', message: 'Send it first' });
+    if (root.sequence?.status === 'active') return res.status(409).json({ error: 'conflict', message: 'Already has automatic follow-ups' });
+    const { buildSteps, draftMissingSteps } = await import('../sequences.js');
+    // Count from now for an old email, so nothing fires instantly.
+    const base = new Date(Math.max(root.sentAt.getTime(), Date.now()));
+    root.set('sequence', { status: 'active', steps: buildSteps(base, days) });
+    await root.save();
+    void draftMissingSteps(root._id).catch((err) => logger.warn({ err }, 'sequence drafting failed'));
+    res.json({ sequence: root.sequence });
+  }),
+);
+
+apiRouter.patch(
+  '/messages/:id/sequence/:i',
+  h(async (req, res) => {
+    const root = await loadSequenceRoot(req, res);
+    if (!root) return;
+    const i = stepIndex(req);
+    const step = root.sequence!.steps[i];
+    if (!step || step.status !== 'pending') return res.status(409).json({ error: 'conflict', message: 'That follow-up already went out or was cancelled' });
+    const patch = z.object({ subject: z.string().max(300).optional(), body: z.string().min(1).max(20_000).optional() }).parse(req.body);
+    if (patch.subject !== undefined) step.subject = patch.subject;
+    if (patch.body !== undefined) step.body = patch.body;
+    step.edited = true;
+    await root.save();
+    res.json({ sequence: root.sequence });
+  }),
+);
+
+apiRouter.post(
+  '/messages/:id/sequence/:i/skip',
+  h(async (req, res) => {
+    const root = await loadSequenceRoot(req, res);
+    if (!root) return;
+    const step = root.sequence!.steps[stepIndex(req)];
+    if (!step || step.status !== 'pending') return res.status(409).json({ error: 'conflict', message: 'Nothing to skip' });
+    step.status = 'skipped';
+    if (!root.sequence!.steps.some((s) => s.status === 'pending')) root.sequence!.status = 'done';
+    await root.save();
+    res.json({ sequence: root.sequence });
+  }),
+);
+
+apiRouter.post(
+  '/messages/:id/sequence/:i/send-now',
+  h(async (req, res) => {
+    const root = await loadSequenceRoot(req, res);
+    if (!root) return;
+    const i = stepIndex(req);
+    const step = root.sequence!.steps[i];
+    if (!step || step.status !== 'pending' || root.sequence!.status !== 'active') return res.status(409).json({ error: 'conflict', message: 'Nothing to send' });
+    if (root.sequence!.steps.slice(0, i).some((s) => s.status === 'pending')) {
+      return res.status(409).json({ error: 'conflict', message: 'Send or skip the earlier follow-up first' });
+    }
+    step.dueAt = new Date();
+    await root.save();
+    await tickSequences(sendSequenceStep);
+    const after = await MessageModel.findById(root._id).lean();
+    const s = after?.sequence?.steps[i];
+    if (s?.status !== 'sent') return res.status(502).json({ error: 'send_failed', message: s?.error || 'Not sent yet: Gemini is still drafting it, try again in a moment' });
+    res.json({ sequence: after!.sequence });
+  }),
+);
+
+apiRouter.post(
+  '/messages/:id/sequence/stop',
+  h(async (req, res) => {
+    const root = await loadSequenceRoot(req, res);
+    if (!root) return;
+    root.sequence!.status = 'stopped';
+    root.sequence!.stopReason = 'Stopped by you';
+    for (const s of root.sequence!.steps) if (s.status === 'pending') s.status = 'cancelled';
+    await root.save();
+    res.json({ sequence: root.sequence });
+  }),
+);
+
+// ---------- thank-you notes and referral asks ----------
+
+apiRouter.post(
+  '/ai/thankyou',
+  aiLimit,
+  h(async (req, res) => {
+    const { applicationId, key } = z.object({ applicationId: objectId, key: z.string().min(1).max(200) }).parse(req.body);
+    const app = await ApplicationModel.findById(applicationId).lean();
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const interview = app.interviews.find((i) => i.eventId === key);
+    // Who to thank: the interviewers, else whoever you last emailed there.
+    let to = (interview?.attendees ?? []).filter((a) => a && a !== env.ALLOWED_EMAIL);
+    if (!to.length) {
+      const last = await MessageModel.findOne({ applicationId: app._id, kind: 'email' }).sort({ sentAt: -1 }).select('to').lean();
+      to = (last?.to ?? []).map((r) => r.email ?? '').filter(Boolean);
+    }
+    const account = await AccountModel.findOne({ email: env.ALLOWED_EMAIL }).select('aboutMe').lean();
+    try {
+      const draft = await draftThankYou({
+        job: { company: app.company, role: app.role, jobUrl: app.jobUrl, jobDescription: app.jobDescription },
+        interviewTitle: interview?.title ?? `Interview with ${app.company}`,
+        interviewers: to.join(', '),
+        aboutMe: account?.aboutMe ?? '',
+        notes: app.notes.slice(-5).map((n) => n.text).join('\n'),
+      });
+      res.json({ ...draft, to });
+    } catch (err) {
+      aiFailure(res, err);
+    }
+  }),
+);
+
+apiRouter.post(
+  '/ai/referral',
+  aiLimit,
+  h(async (req, res) => {
+    const { contactId, applicationId } = z.object({ contactId: objectId, applicationId: objectId.optional() }).parse(req.body);
+    const contact = await ContactModel.findById(contactId).lean();
+    if (!contact) return res.status(404).json({ error: 'not found' });
+    const appId = applicationId ?? (contact.applicationIds[0] ? String(contact.applicationIds[0]) : undefined);
+    const job = (await jobFor(appId)) ?? { company: contact.company };
+    const account = await AccountModel.findOne({ email: env.ALLOWED_EMAIL }).select('aboutMe').lean();
+    try {
+      const draft = await draftReferralAsk({
+        contact: { name: contact.name, title: contact.title, relationship: contact.relationship, notes: contact.notes },
+        job,
+        aboutMe: account?.aboutMe ?? '',
+      });
+      res.json({ ...draft, applicationId: appId });
+    } catch (err) {
+      aiFailure(res, err);
+    }
+  }),
+);
+
+// ---------- digest and calendar ----------
+
+apiRouter.get('/digest/preview', h(async (_req, res) => res.json(await buildDigest())));
+
+apiRouter.post(
+  '/digest/send',
+  rateLimit({ windowMs: 60_000, limit: 3 }),
+  h(async (_req, res) => {
+    try {
+      res.json(await sendDigest());
+    } catch (err) {
+      const f = sendFailure(err);
+      res.status(f.status).json(f);
+    }
+  }),
+);
+
+apiRouter.post(
+  '/calendar/sync',
+  rateLimit({ windowMs: 60_000, limit: 4 }),
+  h(async (_req, res) => res.json({ matched: await syncCalendar() })),
 );

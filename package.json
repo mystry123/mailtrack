@@ -9,7 +9,8 @@
     "build": "tsc -p tsconfig.server.json && vite build",
     "start": "node --env-file=.env dist/server/index.js",
     "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.web.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "e2e": "node --env-file=.env test/e2e.mjs"
   },
   "engines": {
     "node": ">=22"
