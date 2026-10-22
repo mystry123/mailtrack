@@ -1,16 +1,34 @@
 {
   "manifest_version": 3,
   "name": "Mailtrack",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Save job postings to your Mailtrack pipeline, and stop your own Gmail views counting as opens.",
-  "host_permissions": ["https://track.shotline.in/*"],
-  "permissions": ["activeTab", "scripting"],
-  "background": { "service_worker": "background.js" },
-  "action": { "default_title": "Save this job to Mailtrack" },
+  "host_permissions": [
+    "https://track.shotline.in/*"
+  ],
+  "permissions": [
+    "activeTab",
+    "scripting"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Save this job to Mailtrack",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png"
+    }
+  },
   "content_scripts": [
     {
-      "matches": ["https://mail.google.com/*"],
-      "js": ["content.js"],
+      "matches": [
+        "https://mail.google.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_start"
     },
     {
@@ -25,8 +43,17 @@
         "https://apply.workable.com/*",
         "https://*.myworkdayjobs.com/*"
       ],
-      "js": ["extract.js", "job.js"],
+      "js": [
+        "extract.js",
+        "job.js"
+      ],
       "run_at": "document_idle"
     }
-  ]
+  ],
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  }
 }
