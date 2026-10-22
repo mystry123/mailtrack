@@ -11,7 +11,8 @@ import { apiRouter } from './routes/api.js';
 import { applicationsRouter } from './routes/applications.js';
 import { contactsRouter } from './routes/contacts.js';
 import { startJobs } from './jobs.js';
-import { ApplicationModel, ContactModel } from './models.js';
+import { asSystem } from './context.js';
+import { AccountModel, ApplicationModel, ContactModel, EventModel, MessageModel, SettingModel, TemplateModel } from './models.js';
 import { authRouter } from './routes/auth.js';
 import { trackRouter } from './routes/track.js';
 
@@ -73,10 +74,15 @@ async function migrateEmbeddedContacts() {
       if (!c.name && !c.email) continue;
       const email = (c.email ?? '').trim().toLowerCase();
       const fields = { name: c.name ?? '', title: c.title ?? '', linkedin: c.linkedin ?? '', company: app.company };
+      const userId = app.get('userId');
       if (email) {
-        await ContactModel.updateOne({ email }, { $setOnInsert: { email, ...fields }, $addToSet: { applicationIds: app._id } }, { upsert: true });
+        await ContactModel.updateOne(
+          { userId, email },
+          { $setOnInsert: { userId, email, ...fields }, $addToSet: { applicationIds: app._id } },
+          { upsert: true },
+        );
       } else {
-        await ContactModel.create({ ...fields, applicationIds: [app._id] });
+        await ContactModel.create({ userId, ...fields, applicationIds: [app._id] });
       }
     }
     app.set('contacts', []);
@@ -85,10 +91,23 @@ async function migrateEmbeddedContacts() {
   }
 }
 
+// Before multi-user everything belonged to the owner: give it an owner.
+async function backfillOwner() {
+  const owner = await AccountModel.findOne({ email: env.ALLOWED_EMAIL }).select('_id').lean();
+  if (!owner) return;
+  for (const model of [MessageModel, EventModel, ApplicationModel, ContactModel, TemplateModel, SettingModel] as const) {
+    const r = await (model as typeof MessageModel).updateMany({ userId: { $exists: false } }, { $set: { userId: owner._id } });
+    if (r.modifiedCount) logger.info({ collection: model.collection.name, count: r.modifiedCount }, 'assigned existing data to the owner');
+  }
+}
+
 async function main() {
   await mongoose.connect(env.MONGODB_URI, { dbName: env.MONGODB_DB });
-  await mongoose.syncIndexes();
-  await migrateEmbeddedContacts();
+  await asSystem(async () => {
+    await backfillOwner();
+    await mongoose.syncIndexes();
+    await migrateEmbeddedContacts();
+  });
   if (runJobs) startJobs();
   else logger.info('background jobs off (not production; set RUN_JOBS=true to enable)');
   const server = app.listen(env.PORT, '127.0.0.1', () => logger.info({ port: env.PORT }, 'mailtrack listening'));

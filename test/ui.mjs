@@ -183,6 +183,7 @@ await step('People: add a person, then search for them', async () => {
 await step('Settings: save follow-up defaults and preview the digest', async () => {
   await go('/settings');
   await until('document.body.innerText.includes("Daily sending limit")', 'settings');
+  assert.match(await bodyText(), /Who can use Mailtrack/, 'owner sees invites');
   await clickText('Preview');
   await until('!!document.querySelector(".digest-preview")?.innerText.includes("Your job search this week")', 'digest preview');
   await clickText('Save settings');

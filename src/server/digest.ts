@@ -1,11 +1,12 @@
 // Monday-morning summary email: last week's numbers, what worked, what's next.
 
 import { env } from './env.js';
-import { sendGmail } from './google.js';
+import { myEmail, sendGmail } from './google.js';
 import { AccountModel, ApplicationModel, EventModel, MessageModel, TemplateModel } from './models.js';
 import { today } from './overview.js';
 import { renderBody } from '../shared/render.js';
 import { STAGE_LABEL, type Stage } from '../shared/stages.js';
+import { currentUserId } from './context.js';
 
 const DAY = 86_400_000;
 
@@ -31,7 +32,7 @@ export async function buildDigest(now = new Date()): Promise<{ subject: string; 
     MessageModel.find({ kind: 'email', status: { $in: ['sent', null] }, sentAt: { $gte: since } }).select('stats subject templateId followUpOf automatic').lean(),
     EventModel.find({ signal: 'real', at: { $gte: since } }).select('type').lean(),
     ApplicationModel.find({ 'stageHistory.at': { $gte: since } }).select('company stage stageHistory').lean(),
-    AccountModel.findOne({ email: env.ALLOWED_EMAIL }).select('weeklyGoal followUpDays').lean(),
+    AccountModel.findById(currentUserId()).select('weeklyGoal followUpDays').lean(),
     today(),
   ]);
   const firsts = emails.filter((m) => !m.followUpOf);
@@ -85,7 +86,7 @@ export async function buildDigest(now = new Date()): Promise<{ subject: string; 
 export async function sendDigest(now = new Date()): Promise<{ subject: string; markdown: string }> {
   const d = await buildDigest(now);
   const { html, text } = renderBody(d.markdown);
-  await sendGmail({ to: [{ email: env.ALLOWED_EMAIL }], cc: [], subject: d.subject, html, text });
-  await AccountModel.updateOne({ email: env.ALLOWED_EMAIL }, { lastDigestAt: now });
+  await sendGmail({ to: [{ email: await myEmail() }], cc: [], subject: d.subject, html, text });
+  await AccountModel.updateOne({ _id: currentUserId() }, { lastDigestAt: now });
   return d;
 }

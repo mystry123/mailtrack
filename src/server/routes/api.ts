@@ -8,7 +8,7 @@ import { buildDigest, sendDigest } from '../digest.js';
 import { newToken } from '../crypto.js';
 import { assertUnderCap, createEmail, deliver, sendFailure, sentInLastDay, trackedUrl } from '../delivery.js';
 import { env } from '../env.js';
-import { CALENDAR_SCOPE, METADATA_SCOPE, READ_SCOPE } from '../google.js';
+import { CALENDAR_SCOPE, METADATA_SCOPE, myEmail, READ_SCOPE } from '../google.js';
 import { checkReplies, sendSequenceStep } from '../jobs.js';
 import { tickSequences } from '../sequences.js';
 import { logger } from '../logger.js';
@@ -16,6 +16,7 @@ import {
   AccountModel,
   ApplicationModel,
   ContactModel,
+  InviteModel,
   EventModel,
   MessageModel,
   SettingModel,
@@ -27,7 +28,8 @@ import { insights, today } from '../overview.js';
 import { createApplication } from '../pipeline.js';
 import { recomputeStats } from '../stats.js';
 import { SOURCES } from '../../shared/stages.js';
-import { requireSameOrigin, requireSession } from './auth.js';
+import { requireOwner, requireSameOrigin, requireSession } from './auth.js';
+import { currentUserId } from '../context.js';
 
 export const apiRouter = Router();
 apiRouter.use(requireSession, requireSameOrigin);
@@ -57,9 +59,10 @@ function aiFailure(res: Response, err: unknown) {
 apiRouter.get(
   '/me',
   h(async (_req, res) => {
-    const account = await AccountModel.findOne({ email: env.ALLOWED_EMAIL }).lean();
+    const account = await AccountModel.findById(currentUserId()).lean();
     res.json({
-      email: env.ALLOWED_EMAIL,
+      email: account?.email ?? '',
+      isOwner: account?.email === env.ALLOWED_EMAIL,
       name: account?.name ?? '',
       fromName: account?.fromName ?? '',
       signature: account?.signature ?? '',
@@ -109,7 +112,7 @@ apiRouter.put(
         followUpDays: z.number().int().min(1).max(30).optional(),
       })
       .parse(req.body);
-    await AccountModel.updateOne({ email: env.ALLOWED_EMAIL }, patch);
+    await AccountModel.updateOne({ _id: currentUserId() }, patch);
     res.json({ ok: true });
   }),
 );
@@ -399,7 +402,7 @@ apiRouter.post(
     if (!input.body.trim() && !input.instruction && !input.applicationId) {
       return res.status(400).json({ error: 'invalid', message: 'Write a draft or tell Gemini what to write' });
     }
-    const account = await AccountModel.findOne({ email: env.ALLOWED_EMAIL }).lean();
+    const account = await AccountModel.findById(currentUserId()).lean();
     try {
       res.json(await enhanceEmail({ ...input, aboutMe: account?.aboutMe ?? '', job: await jobFor(input.applicationId) }));
     } catch (err) {
@@ -423,7 +426,7 @@ apiRouter.post(
       : [message];
     const first = thread[0] ?? message;
     const last = thread.at(-1) ?? message;
-    const account = await AccountModel.findOne({ email: env.ALLOWED_EMAIL }).lean();
+    const account = await AccountModel.findById(currentUserId()).lean();
     try {
       const draft = await draftFollowUp({
         original: {
@@ -558,12 +561,13 @@ apiRouter.post(
     if (!app) return res.status(404).json({ error: 'not found' });
     const interview = app.interviews.find((i) => i.eventId === key);
     // Who to thank: the interviewers, else whoever you last emailed there.
-    let to = (interview?.attendees ?? []).filter((a) => a && a !== env.ALLOWED_EMAIL);
+    const me = await myEmail();
+    let to = (interview?.attendees ?? []).filter((a) => a && a !== me);
     if (!to.length) {
       const last = await MessageModel.findOne({ applicationId: app._id, kind: 'email' }).sort({ sentAt: -1 }).select('to').lean();
       to = (last?.to ?? []).map((r) => r.email ?? '').filter(Boolean);
     }
-    const account = await AccountModel.findOne({ email: env.ALLOWED_EMAIL }).select('aboutMe').lean();
+    const account = await AccountModel.findById(currentUserId()).select('aboutMe').lean();
     try {
       const draft = await draftThankYou({
         job: { company: app.company, role: app.role, jobUrl: app.jobUrl, jobDescription: app.jobDescription },
@@ -588,7 +592,7 @@ apiRouter.post(
     if (!contact) return res.status(404).json({ error: 'not found' });
     const appId = applicationId ?? (contact.applicationIds[0] ? String(contact.applicationIds[0]) : undefined);
     const job = (await jobFor(appId)) ?? { company: contact.company };
-    const account = await AccountModel.findOne({ email: env.ALLOWED_EMAIL }).select('aboutMe').lean();
+    const account = await AccountModel.findById(currentUserId()).select('aboutMe').lean();
     try {
       const draft = await draftReferralAsk({
         contact: { name: contact.name, title: contact.title, relationship: contact.relationship, notes: contact.notes },
@@ -623,4 +627,45 @@ apiRouter.post(
   '/calendar/sync',
   rateLimit({ windowMs: 60_000, limit: 4 }),
   h(async (_req, res) => res.json({ matched: await syncCalendar() })),
+);
+
+// ---------- who can use Mailtrack (owner only) ----------
+
+apiRouter.get(
+  '/invites',
+  requireOwner,
+  h(async (_req, res) => {
+    const [invites, accounts] = await Promise.all([
+      InviteModel.find().sort({ createdAt: -1 }).lean(),
+      AccountModel.find().select('email name createdAt needsReauth').lean(),
+    ]);
+    const joined = new Map(accounts.map((a) => [a.email, a]));
+    res.json({
+      owner: env.ALLOWED_EMAIL,
+      invites: invites.map((i) => ({ _id: i._id, email: i.email, note: i.note, invitedAt: i.createdAt, joinedAt: joined.get(i.email)?.createdAt ?? null })),
+    });
+  }),
+);
+
+apiRouter.post(
+  '/invites',
+  requireOwner,
+  h(async (req, res) => {
+    const { email, note } = z.object({ email: z.string().trim().toLowerCase().email(), note: z.string().trim().max(200).default('') }).parse(req.body);
+    if (email === env.ALLOWED_EMAIL) return res.status(400).json({ error: 'invalid', message: 'That’s you' });
+    if (await InviteModel.exists({ email })) return res.status(409).json({ error: 'conflict', message: 'Already invited' });
+    const invite = await InviteModel.create({ email, note });
+    res.json({ invite });
+  }),
+);
+
+// Removing an invite stops that person signing in and pauses their background jobs; their data stays.
+apiRouter.delete(
+  '/invites/:id',
+  requireOwner,
+  h(async (req, res) => {
+    if (!isValidObjectId(req.params.id)) return res.status(404).json({ error: 'not found' });
+    await InviteModel.deleteOne({ _id: req.params.id });
+    res.json({ ok: true });
+  }),
 );

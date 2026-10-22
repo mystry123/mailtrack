@@ -5,6 +5,7 @@ import { decrypt } from './crypto.js';
 import { fakeGoogle } from './fakes.js';
 import { AccountModel } from './models.js';
 import { buildMime, type MimeInput } from './mime.js';
+import { currentUserId } from './context.js';
 
 export const SEND_SCOPE = 'https://www.googleapis.com/auth/gmail.send';
 // Headers only (From, Date, Message-ID): enough to see that someone replied,
@@ -36,7 +37,7 @@ export interface SentRef {
 }
 
 async function google<T>(url: string, init: { method?: 'GET' | 'POST'; data?: unknown } = {}): Promise<T> {
-  const account = await AccountModel.findOne({ email: env.ALLOWED_EMAIL });
+  const account = await AccountModel.findById(currentUserId());
   if (!account || account.needsReauth) throw new ReauthRequired();
   const client = oauthClient();
   client.setCredentials({ refresh_token: decrypt(account.refreshTokenEnc) });
@@ -56,8 +57,15 @@ async function google<T>(url: string, init: { method?: 'GET' | 'POST'; data?: un
 const gmail = <T>(path: string, init?: { method?: 'GET' | 'POST'; data?: unknown }) =>
   google<T>(`https://gmail.googleapis.com/gmail/v1/users/me/${path}`, init);
 
+// The signed-in person's address (the one mail is sent from).
+export async function myEmail(): Promise<string> {
+  const account = await AccountModel.findById(currentUserId()).select('email').lean();
+  if (!account) throw new ReauthRequired();
+  return account.email;
+}
+
 export async function hasScope(scope: string): Promise<boolean> {
-  const account = await AccountModel.findOne({ email: env.ALLOWED_EMAIL }).select('scopes needsReauth').lean();
+  const account = await AccountModel.findById(currentUserId()).select('scopes needsReauth').lean();
   return !!account && !account.needsReauth && (account.scopes ?? []).includes(scope);
 }
 
@@ -69,7 +77,7 @@ export interface OutgoingMail extends Omit<MimeInput, 'from' | 'headers'> {
 }
 
 export async function sendGmail(message: OutgoingMail): Promise<SentRef> {
-  const account = await AccountModel.findOne({ email: env.ALLOWED_EMAIL }).lean();
+  const account = await AccountModel.findById(currentUserId()).lean();
   if (!account) throw new ReauthRequired();
   const headers: Record<string, string> = {};
   if (message.messageId) headers['Message-ID'] = message.messageId;
@@ -121,6 +129,7 @@ export interface ThreadMessage {
 
 export async function getThread(threadId: string): Promise<ThreadMessage[]> {
   if (env.FAKE_GOOGLE) return fakeGoogle.thread(threadId);
+  const me = await myEmail();
   const t = await gmail<{ messages?: MetaMessage[] }>(`threads/${threadId}?format=metadata&metadataHeaders=From&metadataHeaders=Date`);
   return (t.messages ?? []).map((m) => {
     const from = header(m, 'From');
@@ -130,7 +139,7 @@ export async function getThread(threadId: string): Promise<ThreadMessage[]> {
       at: new Date(Number(m.internalDate)),
       from,
       fromEmail,
-      sentByMe: fromEmail === env.ALLOWED_EMAIL || !!m.labelIds?.includes('SENT'),
+      sentByMe: fromEmail === me || !!m.labelIds?.includes('SENT'),
     };
   });
 }

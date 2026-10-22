@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, type Me, type SavedLink, type Template } from '../api';
 import { Toast } from '../components';
+import { Invites } from './Invites';
 
 export function Settings({ me, onSaved }: { me: Me; onSaved: () => void }) {
   const [fromName, setFromName] = useState(me.fromName || me.name);
@@ -289,6 +290,8 @@ export function Settings({ me, onSaved }: { me: Me; onSaved: () => void }) {
           </ul>
         )}
       </section>
+
+      {me.isOwner && <Invites onToast={setToast} />}
 
       <section className="card form">
         <h2>Chrome extension</h2>

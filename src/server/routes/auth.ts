@@ -5,6 +5,8 @@ import { encrypt } from '../crypto.js';
 import { env, isProd } from '../env.js';
 import { EXTRA_SCOPES, oauthClient, SCOPES } from '../google.js';
 import { logger } from '../logger.js';
+import { withUser } from '../context.js';
+import { isOwner, mayUse } from '../access.js';
 import { AccountModel } from '../models.js';
 import { SELF_COOKIE } from './track.js';
 
@@ -15,20 +17,32 @@ const secret = new TextEncoder().encode(env.SESSION_SECRET);
 
 const baseCookie: CookieOptions = { httpOnly: true, secure: isProd, sameSite: 'lax', path: '/' };
 
+// Signed in, still allowed in: runs the rest of the request as that person
+// (every query on user data is then scoped to them; see context.ts).
 export async function requireSession(req: Request, res: Response, next: NextFunction): Promise<void> {
   const token = req.cookies?.[SESSION_COOKIE];
   if (token) {
     try {
       const { payload } = await jwtVerify(token, secret);
-      if (payload.sub === env.ALLOWED_EMAIL) {
-        res.locals.email = payload.sub;
-        return next();
+      const email = String(payload.sub ?? '');
+      const account = email ? await AccountModel.findOne({ email }).select('_id email').lean() : null;
+      if (account && (await mayUse(email))) {
+        res.locals.account = account;
+        return withUser(account._id, () => next());
       }
     } catch {
       // fall through
     }
   }
   res.status(401).json({ error: 'unauthenticated' });
+}
+
+export function requireOwner(_req: Request, res: Response, next: NextFunction): void {
+  if (!isOwner(res.locals.account?.email)) {
+    res.status(403).json({ error: 'forbidden', message: 'Only the owner can do that' });
+    return;
+  }
+  next();
 }
 
 // Mutating API calls must come from our own page (cookie is SameSite=Lax, and
@@ -63,7 +77,6 @@ authRouter.get('/google', (req, res) => {
     prompt: 'consent',
     scope: [...SCOPES, ...extra],
     state,
-    login_hint: env.ALLOWED_EMAIL,
     include_granted_scopes: true,
   });
   res.redirect(url);
@@ -86,9 +99,9 @@ authRouter.get('/google/callback', async (req, res) => {
     const ticket = await client.verifyIdToken({ idToken: tokens.id_token!, audience: env.GOOGLE_CLIENT_ID });
     const profile = ticket.getPayload();
     const email = profile?.email?.toLowerCase();
-    if (!email || !profile?.email_verified || email !== env.ALLOWED_EMAIL) {
-      logger.warn({ email }, 'rejected sign-in from non-allowed account');
-      return fail('This account is not allowed');
+    if (!email || !profile?.email_verified || !(await mayUse(email))) {
+      logger.warn({ email }, 'rejected sign-in from an account that is not invited');
+      return fail('This Google account hasn’t been invited. Ask the owner to add it in Settings.');
     }
     const granted = (tokens.scope ?? '').split(' ');
     if (!granted.includes('https://www.googleapis.com/auth/gmail.send')) {
@@ -100,6 +113,7 @@ authRouter.get('/google/callback', async (req, res) => {
     const existing = await AccountModel.findOne({ email });
     if (!existing && !tokens.refresh_token) return fail('Google did not return a refresh token; try again');
     await AccountModel.updateOne({ email }, { $set: update }, { upsert: true });
+    const account = await AccountModel.findOne({ email }).select('_id').lean();
 
     const jwt = await new SignJWT({})
       .setProtectedHeader({ alg: 'HS256' })
@@ -108,8 +122,8 @@ authRouter.get('/google/callback', async (req, res) => {
       .setExpirationTime(`${SESSION_DAYS}d`)
       .sign(secret);
     res.cookie(SESSION_COOKIE, jwt, { ...baseCookie, maxAge: SESSION_DAYS * 86_400_000 });
-    // Marks this browser as yours so your own clicks on tracked links don't count.
-    res.cookie(SELF_COOKIE, '1', { ...baseCookie, maxAge: 5 * 365 * 86_400_000 });
+    // Marks this browser as yours so your own clicks on your tracked links don't count.
+    res.cookie(SELF_COOKIE, String(account!._id), { ...baseCookie, maxAge: 5 * 365 * 86_400_000 });
     res.redirect('/app/');
   } catch (err) {
     logger.error({ err }, 'oauth callback failed');

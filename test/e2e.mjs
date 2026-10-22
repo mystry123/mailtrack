@@ -105,7 +105,7 @@ async function main() {
   await mongoose.connect(process.env.MONGODB_URI, { dbName: DB });
   db = mongoose.connection.db;
   // An account as if you had signed in with every permission.
-  await db.collection('accounts').insertOne({
+  const meId = (await db.collection('accounts').insertOne({
     email: ME,
     name: 'Test User',
     fromName: 'Test User',
@@ -125,7 +125,7 @@ async function main() {
     dailyCap: 50,
     timezone: 'Asia/Kolkata',
     weeklyDigest: true,
-  });
+  })).insertedId;
 
   server = spawn('node', ['dist/server/index.js'], { env, stdio: ['ignore', 'inherit', 'inherit'] });
   await until(async () => (await fetch(`${BASE}/health`).catch(() => null))?.ok, 'server start', 20000);
@@ -471,6 +471,95 @@ async function main() {
     await get(`/api/contacts/${c._id}`, { expect: [404] });
   });
 
+  console.log('\nMulti-user: invites and isolation');
+  const FRIEND = 'friend@example.com';
+  const friendId = (await db.collection('accounts').insertOne({
+    email: FRIEND, name: 'Friend', refreshTokenEnc: 'unused', needsReauth: false, dailyCap: 50, timezone: 'Asia/Kolkata',
+    scopes: ['https://www.googleapis.com/auth/gmail.send', 'https://www.googleapis.com/auth/gmail.metadata'],
+  })).insertedId;
+  const jwt2 = await new SignJWT({}).setProtectedHeader({ alg: 'HS256' }).setSubject(FRIEND).setIssuedAt().setExpirationTime('1h').sign(new TextEncoder().encode(SECRET));
+  const F = { cookie: `mt_session=${jwt2}` };
+  await step('someone not invited cannot get in', async () => {
+    await get('/api/me', { ...F, expect: [401] });
+  });
+  await step('the owner invites them; duplicates and self-invites are refused', async () => {
+    const r = (await post('/api/invites', { email: FRIEND, note: 'college friend' })).data;
+    ids.invite = r.invite._id;
+    await post('/api/invites', { email: FRIEND }, { expect: [409] });
+    await post('/api/invites', { email: ME }, { expect: [400] });
+    const list = (await get('/api/invites')).data;
+    assert.equal(list.owner, ME);
+    assert.equal(list.invites[0].email, FRIEND);
+  });
+  await step('an invited user gets in but is not the owner', async () => {
+    const me2 = (await get('/api/me', F)).data;
+    assert.equal(me2.email, FRIEND);
+    assert.equal(me2.isOwner, false);
+    assert.equal((await get('/api/me')).data.isOwner, true);
+    await get('/api/invites', { ...F, expect: [403] });
+    await post('/api/invites', { email: 'x@y.example' }, { ...F, expect: [403] });
+  });
+  await step('they see none of the owner’s data', async () => {
+    assert.equal((await get('/api/applications', F)).data.applications.length, 0);
+    assert.equal((await get('/api/messages', F)).data.messages.length, 0);
+    assert.equal((await get('/api/contacts', F)).data.contacts.length, 0);
+    assert.equal((await get('/api/templates', F)).data.templates.length, 0);
+    assert.deepEqual((await get('/api/saved-links', F)).data.links, []);
+    const t = (await get('/api/today', F)).data;
+    assert.equal(t.hot.length + t.replies.length + t.suggestions.length + t.followUps.length, 0);
+    assert.equal((await get('/api/insights', F)).data.emails.sent, 0);
+    assert.equal((await get('/api/contacts/check?emails=jane@acme.example&company=Acme', F)).data.messages.length, 0);
+    assert.equal((await get('/api/applications/unlinked', F)).data.emails, 0);
+  });
+  await step('they cannot read or change the owner’s records by id', async () => {
+    await get(`/api/applications/${ids.app}`, { ...F, expect: [404] });
+    await patch(`/api/applications/${ids.app}`, { stage: 'rejected' }, { ...F, expect: [404] });
+    await post(`/api/applications/${ids.app}/notes`, { text: 'x' }, { ...F, expect: [404] });
+    await post(`/api/applications/${ids.app}/brief`, {}, { ...F, expect: [404] });
+    await get(`/api/messages/${ids.root}`, { ...F, expect: [404] });
+    await patch(`/api/messages/${ids.root}`, { archived: true }, { ...F, expect: [404] });
+    await post(`/api/messages/${ids.root}/sequence/stop`, {}, { ...F, expect: [404] });
+    await post('/api/ai/followup', { messageId: ids.root }, { ...F, expect: [404] });
+    await post('/api/messages/send', { to: [{ email: 'x@x.example' }], subject: 'hi', body: 'hi', followUpOf: ids.root }, { ...F, expect: [404] });
+    await call('DELETE', `/api/contacts/${ids.contact}`, undefined, F);
+    // Still the owner's, untouched.
+    assert.equal((await get(`/api/applications/${ids.app}`)).data.application.stage, 'screening');
+    assert.equal((await get(`/api/messages/${ids.root}`)).data.message.archived, false);
+    await get(`/api/contacts/${ids.contact}`);
+  });
+  await step('their own email, contacts and tracking stay theirs', async () => {
+    const before = (await get('/api/messages')).data.messages.length;
+    const ownerSent = (await get('/api/me')).data.sentToday;
+    const { data } = await post('/api/messages/send', { to: [{ email: 'hr@zeta.example', name: 'HR' }], subject: 'Hello Zeta', body: 'Hi there, [my portfolio](https://example.com/p)', newApplication: { company: 'Zeta', role: '' } }, F);
+    const m2 = (await get(`/api/messages/${data.message._id}`, F)).data;
+    assert.equal(m2.application.company, 'Zeta');
+    assert.equal((await get('/api/messages')).data.messages.length, before, 'owner list unchanged');
+    assert.equal((await get('/api/me')).data.sentToday, ownerSent, 'daily count is per person');
+    assert.equal((await get('/api/contacts', F)).data.contacts[0].email, 'hr@zeta.example');
+    // Their click counts for them, even from a browser carrying the owner's "this is me" cookie.
+    await db.collection('messages').updateOne({ _id: new mongoose.Types.ObjectId(data.message._id) }, { $set: { sentAt: new Date(Date.now() - 3_600_000) } });
+    const r = await fetch(`${BASE}/l/${m2.message.links[0].token}`, { redirect: 'manual', headers: { 'user-agent': 'Mozilla/5.0 Chrome/131', 'accept-language': 'en', cookie: `mt_self=${meId}` } });
+    assert.equal(r.status, 302);
+    await until(async () => (await get(`/api/messages/${data.message._id}`, F)).data.message.stats.clicks === 1, 'friend click counted');
+    const ev = (await get(`/api/messages/${data.message._id}`, F)).data.events[0];
+    assert.equal(ev.signal, 'real');
+    // And their own cookie marks their own click as them.
+    await fetch(`${BASE}/l/${m2.message.links[0].token}`, { redirect: 'manual', headers: { 'user-agent': 'Mozilla/5.0 Chrome/131', 'accept-language': 'en', cookie: `mt_self=${friendId}` } });
+    await until(async () => (await get(`/api/messages/${data.message._id}`, F)).data.events.some((e) => e.signal === 'self'), 'self click');
+    // The alert went to them, not the owner.
+    const alert = await until(async () => (await db.collection('fake_outbox').find({ to: FRIEND }).toArray())[0], 'friend alert');
+    assert.match(alert.subject, /clicked/);
+  });
+  await step('background jobs run for each person separately', async () => {
+    const r = (await jobs({ only: ['replies'] })).data;
+    assert.equal(typeof r.replies, 'number');
+  });
+  await step('removing the invite locks them out', async () => {
+    await call('DELETE', `/api/invites/${ids.invite}`);
+    await get('/api/me', { ...F, expect: [401] });
+    assert.equal((await get('/api/me')).status, 200);
+  });
+
   console.log('\nGemini features (fake model)');
   await step('enhance, follow-up draft, brief and prep respond in shape', async () => {
     const e = (await post('/api/ai/enhance', { subject: 'Hi', body: 'Hi there, [my resume](https://example.com/cv)', applicationId: ids.app })).data;
@@ -514,7 +603,7 @@ async function main() {
   });
   await step('emails sent before the pipeline import in one click', async () => {
     await db.collection('messages').insertOne({
-      kind: 'email', token: 'legacyTok1234', label: 'Epsilon', to: [{ email: 'a@eps.example' }], cc: [], subject: 'Old', body: '', html: '',
+      userId: meId, kind: 'email', token: 'legacyTok1234', label: 'Epsilon', to: [{ email: 'a@eps.example' }], cc: [], subject: 'Old', body: '', html: '',
       links: [], sentAt: new Date(Date.now() - 5 * DAY), stats: { opens: 0, clicks: 0, replies: 0 }, archived: false,
     });
     assert.equal((await get('/api/applications/unlinked')).data.emails, 1);

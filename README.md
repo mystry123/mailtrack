@@ -37,6 +37,12 @@ Viewing your own Sent copy goes through the same Gmail image proxy as the recipi
 - **Sending safety**: daily cap (default 50, counts everything incl. automatic), pre-send checks (`src/shared/lint.ts`), optional open tracking per email.
 - **Insights**: reply rate by template, by resume version (saved links) and by subject; weekly Monday digest email.
 
+## Multiple users
+
+The owner (`ALLOWED_EMAIL`) invites people in Settings → Who can use Mailtrack. Each person signs in with Google, connects their own Gmail and sees only their own data. Every user-owned model carries `userId`, and the tenancy plugin in `src/server/context.ts` adds it to every query and new document: requests run inside `withUser()` (set by `requireSession`), background jobs loop over accounts with `withUser()`, and the public tracking routes look messages up by token with `asSystem()` and then record as the message's owner. A query outside any context throws. Existing single-user data was assigned to the owner on first start (`backfillOwner`).
+
+Google allows up to 100 users while the OAuth app is unverified (they see a one-time warning).
+
 ## Tests
 
 ```bash

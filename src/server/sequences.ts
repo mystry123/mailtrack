@@ -10,6 +10,7 @@ import { env } from './env.js';
 import { logger } from './logger.js';
 import { AccountModel, ApplicationModel, MessageModel, type Message } from './models.js';
 import { addBusinessDays, isOpenStage, stageRank } from '../shared/stages.js';
+import { currentUserId } from './context.js';
 
 export interface StepInput {
   afterDays: number;
@@ -49,7 +50,7 @@ function fallbackBody(n: number): string {
 export async function draftMissingSteps(rootId: Types.ObjectId | string): Promise<void> {
   const root = await MessageModel.findById(rootId);
   if (!root?.sequence || root.sequence.status !== 'active') return;
-  const account = await AccountModel.findOne({ email: env.ALLOWED_EMAIL }).select('aboutMe').lean();
+  const account = await AccountModel.findById(currentUserId()).select('aboutMe').lean();
   const app = root.applicationId ? await ApplicationModel.findById(root.applicationId).select('company role jobUrl jobDescription').lean() : null;
 
   for (const [i, step] of root.sequence.steps.entries()) {

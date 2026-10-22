@@ -74,6 +74,7 @@ export interface TrackEvent {
 
 export interface Me {
   email: string;
+  isOwner: boolean;
   name: string;
   fromName: string;
   signature: string;

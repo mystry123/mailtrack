@@ -1,9 +1,10 @@
+import { mayUse } from './access.js';
 import { readReply } from './ai.js';
 import { syncCalendar } from './calendar.js';
 import { assertUnderCap, createEmail, DailyCapReached, deliver } from './delivery.js';
 import { digestDue, sendDigest } from './digest.js';
 import { env } from './env.js';
-import { getMessageText, getThread, hasScope, METADATA_SCOPE, READ_SCOPE, ReauthRequired, sendGmail } from './google.js';
+import { getMessageText, getThread, hasScope, METADATA_SCOPE, myEmail, READ_SCOPE, ReauthRequired, sendGmail } from './google.js';
 import { logger } from './logger.js';
 import { AccountModel, ApplicationModel, EventModel, MessageModel, type Message } from './models.js';
 import { advance } from './pipeline.js';
@@ -11,6 +12,7 @@ import { tickSequences, type SendStep } from './sequences.js';
 import { recomputeStats } from './stats.js';
 import { renderBody } from '../shared/render.js';
 import { isOpenStage, stageRank } from '../shared/stages.js';
+import { asSystem, currentUserId, withUser } from './context.js';
 
 const SCHEDULE_EVERY_MS = 30_000;
 const REPLIES_EVERY_MS = 10 * 60_000;
@@ -179,17 +181,49 @@ async function notifyReply(m: Message, from: string, summary: string): Promise<v
     const { html, text } = renderBody(
       `**${who}** replied to **${m.subject}**.${summary ? `\n\n“${summary}”` : ''}\n\n${env.PUBLIC_URL}/app/#/m/${m._id}`,
     );
-    await sendGmail({ to: [{ email: env.ALLOWED_EMAIL }], cc: [], subject, html, text });
+    await sendGmail({ to: [{ email: await myEmail() }], cc: [], subject, html, text });
   } catch (err) {
     logger.warn({ err }, 'reply notification failed');
   }
 }
 
 export async function maybeSendDigest(now = new Date()): Promise<boolean> {
-  const account = await AccountModel.findOne({ email: env.ALLOWED_EMAIL }).select('weeklyDigest timezone lastDigestAt').lean();
+  const account = await AccountModel.findById(currentUserId()).select('weeklyDigest timezone lastDigestAt').lean();
   if (!account?.weeklyDigest || !digestDue(now, account.timezone || 'Asia/Kolkata', account.lastDigestAt)) return false;
   await sendDigest(now);
   return true;
+}
+
+// Runs a job once for each person, as that person (their Gmail, their data).
+export async function forEachUser<T>(fn: () => Promise<T>): Promise<T[]> {
+  const accounts = await AccountModel.find({ needsReauth: { $ne: true } }).select('_id email').lean();
+  const out: T[] = [];
+  for (const a of accounts) {
+    if (!(await mayUse(a.email))) continue; // invite removed
+    try {
+      out.push(await withUser(a._id, fn));
+    } catch (err) {
+      logger.error({ err, user: a.email }, 'job failed for a user');
+    }
+  }
+  return out;
+}
+
+export type JobName = 'scheduled' | 'sequences' | 'replies' | 'calendar' | 'digest';
+
+// One pass of the background jobs for everyone (also used by test mode with a fake "now").
+export async function runJobs(only: JobName[], now = new Date()): Promise<Record<string, unknown>> {
+  const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
+  const out: Record<string, unknown> = {};
+  if (only.includes('scheduled')) out.scheduled = sum(await forEachUser(() => sendDueScheduled()));
+  if (only.includes('sequences')) {
+    const r = await forEachUser(() => tickSequences(sendSequenceStep, now));
+    out.sequences = { sent: sum(r.map((x) => x.sent)), stopped: sum(r.map((x) => x.stopped)) };
+  }
+  if (only.includes('replies')) out.replies = sum(await forEachUser(() => checkReplies(200)));
+  if (only.includes('calendar')) out.calendar = sum(await forEachUser(() => syncCalendar(now)));
+  if (only.includes('digest')) out.digest = (await forEachUser(() => maybeSendDigest(now))).some(Boolean);
+  return out;
 }
 
 const running: Record<string, boolean> = {};
@@ -206,13 +240,10 @@ export function startJobs(): void {
       running[key] = false;
     }
   };
-  const schedule = tick('schedule', async () => {
-    await sendDueScheduled();
-    await tickSequences(sendSequenceStep);
-  });
-  const replies = tick('replies', () => checkReplies());
-  const calendar = tick('calendar', () => syncCalendar());
-  const digest = tick('digest', () => maybeSendDigest());
+  const schedule = tick('schedule', () => asSystem(() => runJobs(['scheduled', 'sequences'])));
+  const replies = tick('replies', () => asSystem(() => runJobs(['replies'])));
+  const calendar = tick('calendar', () => asSystem(() => runJobs(['calendar'])));
+  const digest = tick('digest', () => asSystem(() => runJobs(['digest'])));
   setInterval(schedule, SCHEDULE_EVERY_MS).unref();
   setInterval(replies, REPLIES_EVERY_MS).unref();
   setInterval(calendar, CALENDAR_EVERY_MS).unref();

@@ -1,6 +1,7 @@
 import { env } from './env.js';
 import { AccountModel, ApplicationModel, EventModel, MessageModel, SettingModel, TemplateModel, type Application, type Message } from './models.js';
 import { addBusinessDays, furthestRank, isOpenStage, stageRank, SOURCES } from '../shared/stages.js';
+import { currentUserId } from './context.js';
 
 const DAY = 86_400_000;
 // After two follow-ups, suggest "Ghosted" once it's been this quiet.
@@ -36,7 +37,7 @@ function appSummary(a: Lean<Application>) {
 
 export async function today() {
   const now = Date.now();
-  const account = await AccountModel.findOne({ email: env.ALLOWED_EMAIL }).select('weeklyGoal followUpDays').lean();
+  const account = await AccountModel.findById(currentUserId()).select('weeklyGoal followUpDays').lean();
   const followUpDays = account?.followUpDays ?? 4;
 
   const apps = await ApplicationModel.find({ archived: false }).lean<Lean<Application>[]>();

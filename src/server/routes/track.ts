@@ -4,7 +4,8 @@ import geoip from 'geoip-lite';
 import { classify } from '../classify.js';
 import { env } from '../env.js';
 import { logger } from '../logger.js';
-import { EventModel, MessageModel, type Message } from '../models.js';
+import { asSystem, withUser } from '../context.js';
+import { AccountModel, EventModel, MessageModel, type Message } from '../models.js';
 import { notifyFirst } from '../notify.js';
 import { recomputeStats } from '../stats.js';
 
@@ -15,10 +16,30 @@ const PIXEL = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBR
 
 const TOKEN_RE = /^[A-Za-z0-9]{8,32}$/;
 
+// Tracking links are public: find the message by its unguessable token across
+// all users, then record everything as the message's owner.
+// .exec() inside asSystem: a query runs (and is scoped) when executed, not when built.
+const findByToken = (filter: Record<string, string>) => asSystem(() => MessageModel.findOne(filter).lean<Message>().exec());
+
+// The "this is you" cookie holds your account id ("1" from before multi-user meant the owner).
+let ownerId: string | null = null;
+async function isSelf(cookie: string | undefined, message: Message): Promise<boolean> {
+  if (!cookie) return false;
+  if (cookie === String(message.userId)) return true;
+  if (cookie !== '1') return false;
+  ownerId ??= String((await AccountModel.findOne({ email: env.ALLOWED_EMAIL }).select('_id').lean())?._id ?? '');
+  return ownerId === String(message.userId);
+}
+
 // How long after the extension reports you viewing an email its opens count as yours.
 const SELF_VIEW_MS = 2 * 60_000;
 
-async function record(req: Request, message: Message, type: 'open' | 'click', linkToken?: string): Promise<void> {
+function record(req: Request, message: Message, type: 'open' | 'click', linkToken?: string): Promise<void> {
+  if (!message.userId) return Promise.resolve();
+  return withUser(message.userId, () => recordAsOwner(req, message, type, linkToken));
+}
+
+async function recordAsOwner(req: Request, message: Message, type: 'open' | 'click', linkToken?: string): Promise<void> {
   const now = new Date();
   const ua = req.get('user-agent') ?? '';
   const ip = req.ip ?? '';
@@ -29,7 +50,7 @@ async function record(req: Request, message: Message, type: 'open' | 'click', li
     ip,
     method: req.method,
     acceptLanguage: req.get('accept-language'),
-    selfCookie: req.cookies?.[SELF_COOKIE] === '1',
+    selfCookie: await isSelf(req.cookies?.[SELF_COOKIE], message),
     selfViewing: !!message.selfSeenAt && now.getTime() - new Date(message.selfSeenAt).getTime() < SELF_VIEW_MS,
     sentAt: message.sentAt,
     now,
@@ -85,8 +106,7 @@ trackRouter.get('/o/:file', limiter, (req, res) => {
 
   const token = req.params.file.replace(/\.gif$/, '');
   if (!TOKEN_RE.test(token) || req.method === 'HEAD') return;
-  MessageModel.findOne({ token })
-    .lean<Message>()
+  findByToken({ token })
     .then((m) => (m ? record(req, m, 'open') : undefined))
     .catch((err) => logger.error({ err }, 'open tracking failed'));
 });
@@ -95,7 +115,7 @@ trackRouter.get('/l/:token', limiter, async (req, res, next) => {
   const { token } = req.params;
   let message: Message | null = null;
   try {
-    message = TOKEN_RE.test(token) ? await MessageModel.findOne({ 'links.token': token }).lean<Message>() : null;
+    message = TOKEN_RE.test(token) ? await findByToken({ 'links.token': token }) : null;
   } catch (err) {
     return next(err);
   }
@@ -120,14 +140,16 @@ trackRouter.post('/x/seen', limiter, express.json({ limit: '1kb' }), async (req,
   res.status(204).end();
   if (!TOKEN_RE.test(token)) return;
   try {
-    const message = await MessageModel.findOneAndUpdate({ token }, { selfSeenAt: new Date() }).lean<Message>();
-    if (!message) return;
-    const since = new Date(Date.now() - SELF_VIEW_MS);
-    const r = await EventModel.updateMany(
-      { messageId: message._id, type: 'open', at: { $gte: since }, signal: { $ne: 'self' }, manual: false },
-      { signal: 'self', reason: 'you were viewing it in Gmail (extension)' },
-    );
-    if (r.modifiedCount) await recomputeStats(message._id);
+    const message = await asSystem(() => MessageModel.findOneAndUpdate({ token }, { selfSeenAt: new Date() }).lean<Message>().exec());
+    if (!message?.userId) return;
+    await withUser(message.userId, async () => {
+      const since = new Date(Date.now() - SELF_VIEW_MS);
+      const r = await EventModel.updateMany(
+        { messageId: message._id, type: 'open', at: { $gte: since }, signal: { $ne: 'self' }, manual: false },
+        { signal: 'self', reason: 'you were viewing it in Gmail (extension)' },
+      );
+      if (r.modifiedCount) await recomputeStats(message._id);
+    });
   } catch (err) {
     next(err);
   }

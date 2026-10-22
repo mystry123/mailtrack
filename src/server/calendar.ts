@@ -1,9 +1,10 @@
 // Finds interviews on your Google Calendar and attaches them to applications.
 
 import { env } from './env.js';
-import { CALENDAR_SCOPE, hasScope, listCalendarEvents, type CalendarEvent } from './google.js';
+import { CALENDAR_SCOPE, hasScope, listCalendarEvents, myEmail, type CalendarEvent } from './google.js';
 import { AccountModel, ApplicationModel, ContactModel, MessageModel, type Application } from './models.js';
 import { isOpenStage, stageRank } from '../shared/stages.js';
+import { currentUserId } from './context.js';
 
 const PUBLIC_DOMAINS = new Set(['gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com', 'yahoo.com', 'icloud.com', 'proton.me', 'protonmail.com', 'live.com']);
 const INTERVIEW_WORDS = /\b(interview|screen(ing)?|call|chat|round|onsite|on-site|technical|coffee|intro|sync|meet)\b/i;
@@ -35,6 +36,7 @@ export async function syncCalendar(now = new Date()): Promise<number> {
   if (!(await hasScope(CALENDAR_SCOPE))) return 0;
   const events = await listCalendarEvents(new Date(now.getTime() - 3 * 86_400_000), new Date(now.getTime() + 21 * 86_400_000));
   const apps = await ApplicationModel.find({ archived: false }).lean<Lean<Application>[]>();
+  const me = await myEmail();
   let matched = 0;
 
   for (const app of apps) {
@@ -63,7 +65,7 @@ export async function syncCalendar(now = new Date()): Promise<number> {
         title: e.title,
         start: e.start,
         end: e.end,
-        attendees: e.attendees.filter((a) => a !== env.ALLOWED_EMAIL),
+        attendees: e.attendees.filter((a) => a !== me),
         matchedBy: m.matchedBy,
         thankYouDone: prev.get(e.id)?.thankYouDone ?? false,
       })),
@@ -77,6 +79,6 @@ export async function syncCalendar(now = new Date()): Promise<number> {
     }
     await doc.save();
   }
-  await AccountModel.updateOne({ email: env.ALLOWED_EMAIL }, { calendarSyncedAt: now });
+  await AccountModel.updateOne({ _id: currentUserId() }, { calendarSyncedAt: now });
   return matched;
 }

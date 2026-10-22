@@ -1,5 +1,5 @@
 import { env } from './env.js';
-import { sendGmail } from './google.js';
+import { myEmail, sendGmail } from './google.js';
 import { logger } from './logger.js';
 import type { Message, TrackEvent } from './models.js';
 import { renderBody } from '../shared/render.js';
@@ -35,7 +35,7 @@ export async function notifyFirst(m: Message, e: TrackEvent): Promise<void> {
   const { html, text } = renderBody(body);
 
   try {
-    await sendGmail({ to: [{ email: env.ALLOWED_EMAIL }], cc: [], subject, html, text });
+    await sendGmail({ to: [{ email: await myEmail() }], cc: [], subject, html, text });
   } catch (err) {
     logger.warn({ err, messageId: String(m._id) }, 'notification failed');
   }

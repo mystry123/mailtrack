@@ -11,6 +11,7 @@ import { applyManualStage, createApplication } from '../pipeline.js';
 import { SOURCES, STAGES } from '../../shared/stages.js';
 import { requireSameOrigin, requireSession } from './auth.js';
 import { h } from './api.js';
+import { currentUserId } from '../context.js';
 
 export const applicationsRouter = Router();
 applicationsRouter.use(requireSession, requireSameOrigin);
@@ -312,7 +313,7 @@ applicationsRouter.post(
   h(async (req, res) => {
     const app = await load(req.params.id);
     if (!app) return res.status(404).json({ error: 'not found' });
-    const account = await AccountModel.findOne({ email: env.ALLOWED_EMAIL }).select('aboutMe').lean();
+    const account = await AccountModel.findById(currentUserId()).select('aboutMe').lean();
     try {
       const prep = await interviewPrep(
         { company: app.company, role: app.role, jobUrl: app.jobUrl, jobDescription: app.jobDescription },

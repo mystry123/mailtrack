@@ -1,5 +1,6 @@
 import mongoose, { Schema, type InferSchemaType, type Types } from 'mongoose';
 import { SOURCES, STAGES } from '../shared/stages.js';
+import { tenancy } from './context.js';
 
 const accountSchema = new Schema(
   {
@@ -236,7 +237,7 @@ const contactSchema2 = new Schema(
   },
   { timestamps: true },
 );
-contactSchema2.index({ email: 1 }, { unique: true, partialFilterExpression: { email: { $gt: '' } } });
+contactSchema2.index({ userId: 1, email: 1 }, { unique: true, partialFilterExpression: { email: { $gt: '' } } });
 
 const templateSchema = new Schema(
   { name: { type: String, required: true }, subject: { type: String, default: '' }, body: { type: String, default: '' } },
@@ -244,17 +245,32 @@ const templateSchema = new Schema(
 );
 
 const settingSchema = new Schema({
-  key: { type: String, required: true, unique: true },
+  key: { type: String, required: true },
   value: Schema.Types.Mixed,
 });
 
 export type Account = InferSchemaType<typeof accountSchema>;
-export type Message = InferSchemaType<typeof messageSchema> & { _id: Types.ObjectId };
-export type TrackEvent = InferSchemaType<typeof eventSchema> & { _id: Types.ObjectId };
-export type Application = InferSchemaType<typeof applicationSchema> & { _id: Types.ObjectId };
-export type Contact = InferSchemaType<typeof contactSchema2> & { _id: Types.ObjectId };
+// userId comes from the tenancy plugin.
+type Owned = { _id: Types.ObjectId; userId?: Types.ObjectId };
+export type Message = InferSchemaType<typeof messageSchema> & Owned;
+export type TrackEvent = InferSchemaType<typeof eventSchema> & Owned;
+export type Application = InferSchemaType<typeof applicationSchema> & Owned;
+export type Contact = InferSchemaType<typeof contactSchema2> & Owned;
+
+// People you've let in (besides the owner, ALLOWED_EMAIL). Not per-user data.
+const inviteSchema = new Schema(
+  { email: { type: String, required: true, unique: true, lowercase: true, trim: true }, note: { type: String, default: '' } },
+  { timestamps: true },
+);
+
+// Everything below holds one person's data: the tenancy plugin scopes every
+// query to the current user (src/server/context.ts).
+for (const schema of [messageSchema, eventSchema, settingSchema, applicationSchema, templateSchema, contactSchema2]) schema.plugin(tenancy);
+settingSchema.index({ userId: 1, key: 1 }, { unique: true });
+templateSchema.index({ userId: 1, name: 1 });
 
 export const AccountModel = mongoose.model('Account', accountSchema);
+export const InviteModel = mongoose.model('Invite', inviteSchema);
 export const MessageModel = mongoose.model('Message', messageSchema);
 export const EventModel = mongoose.model('Event', eventSchema);
 export const SettingModel = mongoose.model('Setting', settingSchema);
