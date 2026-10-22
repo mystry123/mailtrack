@@ -48,10 +48,25 @@ export function escapeHtml(s: string): string {
     .replace(/'/g, '&#39;');
 }
 
-function labelForBareUrl(url: string): string {
+// A readable name for a pasted URL; the dashboard reports clicks by it.
+const KNOWN_HOSTS: [RegExp, string][] = [
+  [/^drive\.google\.com$/, 'Google Drive file'],
+  [/^docs\.google\.com$/, 'Google Doc'],
+  [/(^|\.)linkedin\.com$/, 'LinkedIn'],
+  [/^github\.com$/, 'GitHub'],
+  [/(^|\.)notion\.(so|site)$/, 'Notion page'],
+  [/^(www\.)?loom\.com$/, 'Loom video'],
+  [/^(www\.)?youtube\.com$|^youtu\.be$/, 'YouTube video'],
+];
+
+export function labelForBareUrl(url: string): string {
   try {
     const u = new URL(url);
-    return u.hostname.replace(/^www\./, '') + (u.pathname === '/' ? '' : u.pathname);
+    const host = u.hostname.replace(/^www\./, '');
+    const known = KNOWN_HOSTS.find(([rx]) => rx.test(host));
+    if (known) return known[1];
+    const path = u.pathname.replace(/\/$/, '');
+    return path && path.length <= 24 ? host + path : host;
   } catch {
     return url;
   }

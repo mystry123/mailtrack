@@ -104,7 +104,7 @@ function Weekly({ started, goal }: { started: string[]; goal: number }) {
     <div className="chart" ref={t.box}>
       <div className="vbars" role="img" aria-label="Applications started per week, last 12 weeks">
         {goal > 0 && (
-          <div className="goal-line" style={{ bottom: `${(goal / max) * 100}%` }}>
+          <div className="goal-marker" style={{ bottom: `${(goal / max) * 100}%` }}>
             <span>goal {goal}</span>
           </div>
         )}

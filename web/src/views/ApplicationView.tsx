@@ -238,7 +238,7 @@ export function ApplicationView({ id }: { id: string }) {
             <ol className="timeline">
               {timeline.map((t, i) => (
                 <li key={i} className={`tl tl-${t.kind}`}>
-                  <span className={`tl-dot ${t.kind}`} />
+                  <span className={`tl-dot tk-${t.kind}`} />
                   <div className="tl-main">
                     {t.href ? (
                       <a href={t.href} className="tl-title">

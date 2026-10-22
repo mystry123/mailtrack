@@ -38,6 +38,11 @@ describe('renderBody', () => {
     expect(r.text).not.toContain('**');
   });
 
+  it('names pasted links readably', () => {
+    const r = renderBody('https://drive.google.com/file/d/13LyT4ENv30FSC1jdLSZcWjZiv4W82km2/view and https://example.com/a/very/long/path/that/goes/on');
+    expect(r.links.map((l) => l.label)).toEqual(['Google Drive file', 'example.com']);
+  });
+
   it('keeps single newlines as line breaks', () => {
     const r = renderBody('Thanks,\nRitik');
     expect(r.html).toContain('Thanks,<br>Ritik');

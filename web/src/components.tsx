@@ -121,7 +121,7 @@ export function AppPicker({
     <div className="picker" ref={box}>
       <input
         value={text}
-        placeholder="Company (links this email to your pipeline)"
+        placeholder="e.g. Cardboard"
         onFocus={() => setOpen(true)}
         onChange={(e) => {
           const t = e.target.value;
@@ -175,6 +175,39 @@ export function Toast({ text, onDone }: { text: string; onDone: () => void }) {
   return (
     <div className="toast" role="status">
       {text}
+    </div>
+  );
+}
+
+// Emails sent before the pipeline existed (or without a company picked): offer to file them in one click.
+export function ImportBanner({ onDone }: { onDone: (msg: string) => void }) {
+  const { data, reload } = useApi<{ emails: number; companies: string[] }>('/api/applications/unlinked');
+  const [busy, setBusy] = useState(false);
+  if (!data || data.emails === 0) return null;
+  const names = data.companies.slice(0, 3).join(', ') + (data.companies.length > 3 ? ` and ${data.companies.length - 3} more` : '');
+  const run = async () => {
+    setBusy(true);
+    try {
+      const r = await api<{ created: number; linked: number }>('/api/applications/import', { method: 'POST', body: {} });
+      onDone(`Added ${r.created} compan${r.created === 1 ? 'y' : 'ies'} · ${r.linked} email${r.linked === 1 ? '' : 's'} linked`);
+      reload();
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="banner import">
+      <span>
+        <strong>
+          {data.emails} sent email{data.emails === 1 ? '' : 's'}
+        </strong>{' '}
+        to {names} {data.emails === 1 ? "isn't" : "aren't"} on your board yet.
+      </span>
+      <span className="banner-actions">
+        <button className="small primary" onClick={run} disabled={busy}>
+          {busy ? 'Adding…' : 'Add to pipeline'}
+        </button>
+      </span>
     </div>
   );
 }

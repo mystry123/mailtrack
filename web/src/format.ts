@@ -1,3 +1,4 @@
+import { labelForBareUrl } from '../../src/shared/render';
 import type { Message, TrackEvent } from './api';
 
 export function ago(iso?: string | null): string {
@@ -120,4 +121,9 @@ export function parseAddresses(input: string): { ok: { email: string; name?: str
     else bad.push(part);
   }
   return { ok, bad };
+}
+
+// Older links were labelled with their raw URL ("drive.google.com/file/d/…"); show a readable name.
+export function linkName(label: string): string {
+  return /^[\w-]+(\.[\w-]+)+\/\S{25,}/.test(label) ? labelForBareUrl(`https://${label}`) : label;
 }

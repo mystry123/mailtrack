@@ -11,7 +11,7 @@ import {
   type Stage,
 } from '../../../src/shared/stages';
 import { api, type Application } from '../api';
-import { Empty, Logo, Modal, StageBadge, Stars, Toast, useApi } from '../components';
+import { Empty, ImportBanner, Logo, Modal, StageBadge, Stars, Toast, useApi } from '../components';
 import { ago, when } from '../format';
 import { Icon } from '../icons';
 import { go } from '../nav';
@@ -37,6 +37,7 @@ function Card({ a, onDragStart }: { a: Application; onDragStart: (id: string) =>
         e.dataTransfer.effectAllowed = 'move';
         onDragStart(a._id);
       }}
+      onDragEnd={() => onDragStart('')}
       onClick={() => go(`/a/${a._id}`)}
       role="button"
       tabIndex={0}
@@ -73,7 +74,7 @@ export function Board() {
   const [view, setView] = useState<'board' | 'list'>(readView);
   const [q, setQ] = useState('');
   const [source, setSource] = useState<Source | ''>('');
-  const [dragging, setDragging] = useState<string | null>(null);
+  const [dragging, setDragging] = useState('');
   const [over, setOver] = useState<string | null>(null);
   const [showClosed, setShowClosed] = useState(false);
   const [adding, setAdding] = useState<Stage | null>(null);
@@ -116,7 +117,7 @@ export function Board() {
     return (
       <div
         key={stage}
-        className={`column${over === stage ? ' over' : ''}`}
+        className={`column${over === stage ? ' over' : ''}${items.length === 0 && !dragging ? ' collapsed' : ''}`}
         onDragOver={(e) => {
           e.preventDefault();
           setOver(stage);
@@ -140,7 +141,7 @@ export function Board() {
           {items.map((a) => (
             <Card key={a._id} a={a} onDragStart={setDragging} />
           ))}
-          {items.length === 0 && <div className="column-empty">Drop here</div>}
+          {items.length === 0 && <div className="column-empty">{dragging ? 'Drop here' : 'Empty'}</div>}
         </div>
       </div>
     );
@@ -192,6 +193,12 @@ export function Board() {
       </div>
 
       {error && <p className="error">{error}</p>}
+      <ImportBanner
+        onDone={(m) => {
+          setToast(m);
+          reload();
+        }}
+      />
       {!data ? (
         <p className="muted">Loading…</p>
       ) : data.applications.length === 0 ? (

@@ -105,6 +105,60 @@ applicationsRouter.get(
   }),
 );
 
+// Emails sent before they belonged to a company, grouped by the company name typed at the time.
+async function unlinkedByCompany() {
+  const messages = await MessageModel.find({
+    kind: 'email',
+    applicationId: { $exists: false },
+    label: { $nin: ['', null] },
+    status: { $in: ['sent', null] },
+    archived: false,
+  })
+    .select('label sentAt stats')
+    .sort({ sentAt: 1 })
+    .lean();
+  const groups = new Map<string, typeof messages>();
+  for (const m of messages) {
+    const key = m.label.trim().toLowerCase();
+    groups.set(key, [...(groups.get(key) ?? []), m]);
+  }
+  return groups;
+}
+
+applicationsRouter.get(
+  '/unlinked',
+  h(async (_req, res) => {
+    const groups = await unlinkedByCompany();
+    res.json({
+      emails: [...groups.values()].reduce((n, g) => n + g.length, 0),
+      companies: [...groups.values()].map((g) => g[0].label.trim()),
+    });
+  }),
+);
+
+// One click: create (or reuse) an application per company and attach the emails.
+applicationsRouter.post(
+  '/import',
+  h(async (_req, res) => {
+    const groups = await unlinkedByCompany();
+    let created = 0;
+    for (const msgs of groups.values()) {
+      const company = msgs[0].label.trim();
+      let app = await ApplicationModel.findOne({ company: new RegExp(`^${company.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') });
+      if (!app) {
+        const first = msgs[0].sentAt;
+        const replied = msgs.find((m) => (m.stats?.replies ?? 0) > 0);
+        app = createApplication({ company, source: 'cold_email' }, 'reached_out', first);
+        if (replied?.stats?.firstReplyAt) applyManualStage(app, 'replied', replied.stats.firstReplyAt);
+        await app.save();
+        created++;
+      }
+      await MessageModel.updateMany({ _id: { $in: msgs.map((m) => m._id) } }, { applicationId: app._id });
+    }
+    res.json({ created, linked: [...groups.values()].reduce((n, g) => n + g.length, 0) });
+  }),
+);
+
 applicationsRouter.post(
   '/',
   h(async (req, res) => {
