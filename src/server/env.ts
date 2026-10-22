@@ -21,6 +21,9 @@ const schema = z.object({
     .enum(['true', 'false'])
     .default('true')
     .transform((s) => s === 'true'),
+  // Scheduled sends and reply checks. Off outside production because a dev
+  // machine shares the production database and would send its scheduled mail.
+  RUN_JOBS: z.enum(['true', 'false']).optional(),
   // Gemini on Vertex (same GCP project as shotline's Cue).
   VERTEX_PROJECT: z.string().default('shotline-511017'),
   VERTEX_LOCATION: z.string().default('global'),
@@ -41,3 +44,4 @@ if (!parsed.success) {
 
 export const env = parsed.data;
 export const isProd = env.NODE_ENV === 'production';
+export const runJobs = env.RUN_JOBS ? env.RUN_JOBS === 'true' : isProd;

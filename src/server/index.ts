@@ -5,9 +5,11 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import helmet from 'helmet';
 import mongoose from 'mongoose';
 import { ZodError } from 'zod';
-import { env } from './env.js';
+import { env, runJobs } from './env.js';
 import { logger } from './logger.js';
 import { apiRouter } from './routes/api.js';
+import { applicationsRouter } from './routes/applications.js';
+import { startJobs } from './jobs.js';
 import { authRouter } from './routes/auth.js';
 import { trackRouter } from './routes/track.js';
 
@@ -36,6 +38,7 @@ app.get('/health', (_req, res) => {
 
 app.use(trackRouter);
 app.use('/auth', express.json({ limit: '10kb' }), authRouter);
+app.use('/api/applications', express.json({ limit: '200kb' }), applicationsRouter);
 app.use('/api', express.json({ limit: '200kb' }), apiRouter);
 
 const webDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../web');
@@ -57,6 +60,8 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
 async function main() {
   await mongoose.connect(env.MONGODB_URI, { dbName: 'mailtrack' });
   await mongoose.syncIndexes();
+  if (runJobs) startJobs();
+  else logger.info('background jobs off (not production; set RUN_JOBS=true to enable)');
   const server = app.listen(env.PORT, '127.0.0.1', () => logger.info({ port: env.PORT }, 'mailtrack listening'));
 
   const shutdown = () => {

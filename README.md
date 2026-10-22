@@ -1,6 +1,10 @@
 # Mailtrack
 
-Personal email open/click tracker at `https://track.shotline.in`. It sends mail through your Gmail account with a tracking pixel added and every link rewritten to a tracked redirect, then shows opens and clicks on a dashboard at `/app`.
+Personal job-search tracker at `https://track.shotline.in`: a pipeline of applications (Wishlist → Applied → Reached out → Replied → Screening → Interviewing → Offer, plus Accepted/Rejected/Ghosted/Withdrawn) fed by tracked emails, opens, clicks and replies. Today shows follow-ups due, hot leads, replies, interviews and a weekly goal; Insights shows the funnel, reply rate by source and when people engage. Gemini (Vertex, 3.1 Pro) rewrites and tailors emails, drafts follow-ups, researches companies (Google Search grounding) and builds interview-prep checklists.
+
+Background jobs (`src/server/jobs.ts`) send scheduled emails every 30s and check reply headers every 10 min (`gmail.metadata`). They only run in production (or with `RUN_JOBS=true`), because a dev machine shares the production database.
+
+The rest of this file covers the tracking itself. It sends mail through your Gmail account with a tracking pixel added and every link rewritten to a tracked redirect, then shows opens and clicks on a dashboard at `/app`.
 
 - `GET /o/:token.gif`: the open pixel
 - `GET /l/:token`: records a click, then 302s to the stored URL (only that URL; no open redirect)

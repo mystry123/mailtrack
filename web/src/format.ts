@@ -1,8 +1,9 @@
 import type { Message, TrackEvent } from './api';
 
-export function ago(iso?: string): string {
+export function ago(iso?: string | null): string {
   if (!iso) return '—';
   const s = Math.round((Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 0) return inFuture(iso);
   if (s < 60) return 'just now';
   const m = Math.round(s / 60);
   if (m < 60) return `${m}m ago`;
@@ -22,9 +23,47 @@ export function when(iso: string): string {
   });
 }
 
-export type Status = 'clicked' | 'opened' | 'auto' | 'sent' | 'waiting';
+export function inFuture(iso: string): string {
+  const s = Math.round((new Date(iso).getTime() - Date.now()) / 1000);
+  if (s < 60) return 'in a moment';
+  const m = Math.round(s / 60);
+  if (m < 60) return `in ${m}m`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `in ${h}h`;
+  return `in ${Math.round(h / 24)}d`;
+}
+
+export function day(iso: string): string {
+  return new Date(iso).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+}
+
+// Monday 00:00 local time of the week containing `d`.
+export function weekStart(d = new Date()): Date {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  x.setDate(x.getDate() - ((x.getDay() + 6) % 7));
+  return x;
+}
+
+// Consecutive days (ending today, or yesterday if nothing yet today) with at least one start.
+export function streak(dates: string[]): number {
+  const days = new Set(dates.map((d) => new Date(d).toDateString()));
+  const cur = new Date();
+  if (!days.has(cur.toDateString())) cur.setDate(cur.getDate() - 1);
+  let n = 0;
+  while (days.has(cur.toDateString())) {
+    n++;
+    cur.setDate(cur.getDate() - 1);
+  }
+  return n;
+}
+
+export type Status = 'replied' | 'clicked' | 'opened' | 'auto' | 'sent' | 'waiting' | 'scheduled' | 'failed';
 
 export function statusOf(m: Message): Status {
+  if (m.status === 'scheduled' || m.status === 'sending') return 'scheduled';
+  if (m.status === 'failed') return 'failed';
+  if ((m.stats.replies ?? 0) > 0) return 'replied';
   if (m.stats.clicks > 0) return 'clicked';
   if (m.stats.opens > 0) return 'opened';
   if (m.stats.autoOpens > 0) return 'auto';
@@ -32,6 +71,9 @@ export function statusOf(m: Message): Status {
 }
 
 export const STATUS_LABEL: Record<Status, string> = {
+  replied: 'Replied',
+  scheduled: 'Scheduled',
+  failed: 'Failed',
   clicked: 'Clicked',
   opened: 'Opened',
   auto: 'Auto-opened',

@@ -1,4 +1,5 @@
 import mongoose, { Schema, type InferSchemaType, type Types } from 'mongoose';
+import { SOURCES, STAGES } from '../shared/stages.js';
 
 const accountSchema = new Schema(
   {
@@ -10,6 +11,10 @@ const accountSchema = new Schema(
     signature: { type: String, default: '' },
     // Background for Gemini: who you are, what you've built, what you're after.
     aboutMe: { type: String, default: '' },
+    // Applications started (applied / reached out) per week the Today page aims for.
+    weeklyGoal: { type: Number, default: 20 },
+    // Working days without a reply before a follow-up is due.
+    followUpDays: { type: Number, default: 4 },
     refreshTokenEnc: { type: String, required: true },
     scopes: { type: [String], default: [] },
     needsReauth: { type: Boolean, default: false },
@@ -39,6 +44,8 @@ const statsSchema = new Schema(
     lastOpenAt: Date,
     firstClickAt: Date,
     lastClickAt: Date,
+    replies: { type: Number, default: 0 },
+    firstReplyAt: Date,
     lastActivityAt: Date,
   },
   { _id: false },
@@ -52,15 +59,29 @@ const messageSchema = new Schema(
     // Pixel token. Links get their own tokens so a click identifies the link.
     token: { type: String, required: true, unique: true },
     label: { type: String, default: '' },
+    applicationId: { type: Schema.Types.ObjectId, ref: 'Application', index: true },
+    // Set on follow-ups: the email this one follows up on (same Gmail thread).
+    followUpOf: { type: Schema.Types.ObjectId, ref: 'Message' },
+    // scheduled → sending → sent; or failed / cancelled. Old messages have no status (= sent).
+    status: { type: String, enum: ['scheduled', 'sending', 'sent', 'failed', 'cancelled'], default: 'sent' },
+    scheduledAt: Date,
+    sendError: String,
     to: { type: [recipientSchema], default: [] },
     cc: { type: [recipientSchema], default: [] },
     subject: { type: String, default: '' },
+    // What you typed (without the signature), so "Send again" can reuse it.
     body: { type: String, default: '' },
-    // Rendered HTML without the pixel, for the dashboard preview.
+    includeSignature: { type: Boolean, default: false },
+    // Rendered HTML without the pixel (dashboard preview), and the plain-text part.
     html: { type: String, default: '' },
+    text: { type: String, default: '' },
     links: { type: [linkSchema], default: [] },
     gmailMessageId: String,
-    gmailThreadId: String,
+    gmailThreadId: { type: String, index: true },
+    // RFC 5322 Message-ID, for threading follow-ups (In-Reply-To / References).
+    rfcMessageId: String,
+    replyCheckedAt: Date,
+    replyIds: { type: [String], default: [] },
     sentAt: { type: Date, required: true },
     stats: { type: statsSchema, default: () => ({}) },
     // Last time the Chrome extension saw this email open in your own Gmail.
@@ -83,7 +104,9 @@ export type Signal = (typeof SIGNALS)[number];
 const eventSchema = new Schema(
   {
     messageId: { type: Schema.Types.ObjectId, ref: 'Message', required: true, index: true },
-    type: { type: String, enum: ['open', 'click'], required: true },
+    type: { type: String, enum: ['open', 'click', 'reply'], required: true },
+    // Replies: who wrote back.
+    from: String,
     linkToken: String,
     at: { type: Date, required: true },
     ip: String,
@@ -103,6 +126,46 @@ const eventSchema = new Schema(
   { timestamps: false },
 );
 
+const noteSchema = new Schema({ text: { type: String, required: true }, at: { type: Date, default: Date.now } });
+const contactSchema = new Schema(
+  { name: String, email: String, title: String, linkedin: String },
+  { _id: false },
+);
+const checkSchema = new Schema({ text: { type: String, required: true }, done: { type: Boolean, default: false } });
+
+const applicationSchema = new Schema(
+  {
+    company: { type: String, required: true, trim: true },
+    role: { type: String, default: '', trim: true },
+    jobUrl: { type: String, default: '' },
+    jobDescription: { type: String, default: '' },
+    source: { type: String, enum: SOURCES, default: 'cold_email' },
+    stage: { type: String, enum: STAGES, default: 'wishlist' },
+    stageHistory: { type: [new Schema({ stage: String, at: Date }, { _id: false })], default: [] },
+    // First time it reached Applied / Reached out: what the weekly goal counts.
+    startedAt: Date,
+    location: { type: String, default: '' },
+    salary: { type: String, default: '' },
+    // 1-3 stars: how much you want it.
+    priority: { type: Number, default: 2, min: 1, max: 3 },
+    contacts: { type: [contactSchema], default: [] },
+    notes: { type: [noteSchema], default: [] },
+    interviewAt: Date,
+    // Hide follow-up nudges until then.
+    snoozedUntil: Date,
+    brief: { text: String, sources: [{ title: String, url: String, _id: false }], at: Date },
+    prep: { type: [checkSchema], default: [] },
+    archived: { type: Boolean, default: false },
+  },
+  { timestamps: true },
+);
+applicationSchema.index({ archived: 1, updatedAt: -1 });
+
+const templateSchema = new Schema(
+  { name: { type: String, required: true }, subject: { type: String, default: '' }, body: { type: String, default: '' } },
+  { timestamps: true },
+);
+
 const settingSchema = new Schema({
   key: { type: String, required: true, unique: true },
   value: Schema.Types.Mixed,
@@ -111,8 +174,11 @@ const settingSchema = new Schema({
 export type Account = InferSchemaType<typeof accountSchema>;
 export type Message = InferSchemaType<typeof messageSchema> & { _id: Types.ObjectId };
 export type TrackEvent = InferSchemaType<typeof eventSchema> & { _id: Types.ObjectId };
+export type Application = InferSchemaType<typeof applicationSchema> & { _id: Types.ObjectId };
 
 export const AccountModel = mongoose.model('Account', accountSchema);
 export const MessageModel = mongoose.model('Message', messageSchema);
 export const EventModel = mongoose.model('Event', eventSchema);
 export const SettingModel = mongoose.model('Setting', settingSchema);
+export const ApplicationModel = mongoose.model('Application', applicationSchema);
+export const TemplateModel = mongoose.model('Template', templateSchema);

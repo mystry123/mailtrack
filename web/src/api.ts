@@ -1,3 +1,5 @@
+import type { Source, Stage } from '../../src/shared/stages';
+
 export type Signal = 'real' | 'self' | 'auto' | 'bot';
 
 export interface Recipient {
@@ -21,6 +23,8 @@ export interface Stats {
   lastOpenAt?: string;
   firstClickAt?: string;
   lastClickAt?: string;
+  replies?: number;
+  firstReplyAt?: string;
   lastActivityAt?: string;
 }
 
@@ -33,6 +37,12 @@ export interface Message {
   subject: string;
   body?: string;
   html?: string;
+  includeSignature?: boolean;
+  applicationId?: string;
+  followUpOf?: string;
+  status?: 'scheduled' | 'sending' | 'sent' | 'failed' | 'cancelled';
+  scheduledAt?: string;
+  sendError?: string;
   links: TrackedLink[];
   sentAt: string;
   stats: Stats;
@@ -41,7 +51,9 @@ export interface Message {
 
 export interface TrackEvent {
   _id: string;
-  type: 'open' | 'click';
+  messageId: string;
+  type: 'open' | 'click' | 'reply';
+  from?: string;
   linkToken?: string;
   at: string;
   ip?: string;
@@ -61,6 +73,9 @@ export interface Me {
   fromName: string;
   signature: string;
   aboutMe: string;
+  weeklyGoal: number;
+  followUpDays: number;
+  replyDetection: boolean;
   needsReauth: boolean;
   publicUrl: string;
 }
@@ -101,4 +116,112 @@ export interface EnhanceResult {
   notes: string;
   model: string;
   warnings: string[];
+}
+
+export interface Contact {
+  name: string;
+  email: string;
+  title: string;
+  linkedin: string;
+}
+
+export interface Application {
+  _id: string;
+  company: string;
+  role: string;
+  jobUrl: string;
+  jobDescription?: string;
+  source: Source;
+  stage: Stage;
+  stageHistory: { stage: Stage; at: string }[];
+  startedAt?: string;
+  location: string;
+  salary: string;
+  priority: number;
+  contacts: Contact[];
+  notes?: { _id: string; text: string; at: string }[];
+  interviewAt?: string | null;
+  snoozedUntil?: string | null;
+  brief?: { text?: string; sources?: { title: string; url: string }[]; at?: string };
+  prep?: { _id?: string; text: string; done: boolean }[];
+  archived: boolean;
+  createdAt: string;
+  updatedAt: string;
+  activity?: {
+    emails: number;
+    links: number;
+    opens: number;
+    clicks: number;
+    replies: number;
+    scheduled: number;
+    lastSentAt?: string;
+    lastActivityAt?: string;
+  };
+}
+
+export interface AppSummary {
+  _id: string;
+  company: string;
+  role: string;
+  stage: Stage;
+  priority: number;
+  interviewAt?: string;
+}
+
+export interface MessageSummary {
+  _id: string;
+  subject: string;
+  to: Recipient[];
+  label: string;
+  sentAt: string;
+  stats: Stats;
+  applicationId?: string;
+  kind?: 'email' | 'link';
+}
+
+export interface Today {
+  goal: number;
+  followUps: { application: AppSummary; message: MessageSummary; followUpNumber: number; daysSince: number }[];
+  ghosted: { application: AppSummary; daysSince: number }[];
+  hot: {
+    message: MessageSummary;
+    application?: AppSummary;
+    opens: number;
+    clicks: number;
+    clickedLabels: string[];
+    lastAt: string;
+  }[];
+  replies: { at: string; from?: string; message?: MessageSummary; application?: AppSummary }[];
+  scheduled: { _id: string; subject: string; to: Recipient[]; label: string; scheduledAt?: string; status: string; sendError?: string }[];
+  interviews: AppSummary[];
+  stageCounts: Record<string, number>;
+  started: string[];
+  active: number;
+}
+
+export interface Insights {
+  funnel: { stage: Stage; label: string; count: number }[];
+  bySource: { source: Source; started: number; replied: number; interviewing: number }[];
+  emails: { sent: number; opened: number; clicked: number; replied: number; followUps: number; avgReplyDays: number | null };
+  engagement: { type: 'open' | 'click' | 'reply'; at: string }[];
+  started: string[];
+  closed: { rejected: number; ghosted: number; withdrawn: number; accepted: number };
+}
+
+export interface Template {
+  _id: string;
+  name: string;
+  subject: string;
+  body: string;
+}
+
+export interface Prefill {
+  to?: string;
+  cc?: string;
+  subject?: string;
+  body?: string;
+  label?: string;
+  applicationId?: string;
+  followUpOf?: string;
+  includeSignature?: boolean;
 }

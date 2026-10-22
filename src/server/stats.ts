@@ -8,6 +8,7 @@ export async function recomputeStats(messageId: Types.ObjectId): Promise<void> {
   const real = events.filter((e) => e.signal === 'real');
   const opens = real.filter((e) => e.type === 'open');
   const clicks = real.filter((e) => e.type === 'click');
+  const replies = real.filter((e) => e.type === 'reply');
 
   const clicksByLink = new Map<string, number>();
   for (const c of clicks) if (c.linkToken) clicksByLink.set(c.linkToken, (clicksByLink.get(c.linkToken) ?? 0) + 1);
@@ -26,6 +27,8 @@ export async function recomputeStats(messageId: Types.ObjectId): Promise<void> {
     lastOpenAt: opens.at(-1)?.at,
     firstClickAt: clicks[0]?.at,
     lastClickAt: clicks.at(-1)?.at,
+    replies: replies.length,
+    firstReplyAt: replies[0]?.at,
     lastActivityAt: real.at(-1)?.at,
   };
   const links = message.links.map((l) => ({ ...l, clicks: clicksByLink.get(l.token) ?? 0 }));

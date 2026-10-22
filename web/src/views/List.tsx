@@ -1,13 +1,17 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api, type Message } from '../api';
-import { go } from '../nav';
+import { Empty, Logo } from '../components';
 import { ago, recipients, STATUS_LABEL, statusOf } from '../format';
+import { Icon } from '../icons';
+import { go } from '../nav';
 
 const FILTERS = [
   ['all', 'All'],
+  ['replied', 'Replied'],
   ['clicked', 'Clicked'],
   ['opened', 'Opened, no click'],
   ['quiet', 'No activity'],
+  ['scheduled', 'Scheduled'],
   ['links', 'Tracked links'],
 ] as const;
 
@@ -37,18 +41,27 @@ export function List() {
   }, [filter, q, archived]);
 
   const totals = useMemo(() => {
-    const list = messages ?? [];
-    const emails = list.filter((m) => m.kind === 'email');
-    return {
-      sent: emails.length,
-      opened: emails.filter((m) => m.stats.opens > 0).length,
-      clicked: list.filter((m) => m.stats.clicks > 0).length,
-    };
+    const emails = (messages ?? []).filter((m) => m.kind === 'email' && (m.status ?? 'sent') === 'sent');
+    const pct = (n: number) => (emails.length ? `${Math.round((n / emails.length) * 100)}%` : '');
+    const opened = emails.filter((m) => m.stats.opens > 0).length;
+    const clicked = emails.filter((m) => m.stats.clicks > 0).length;
+    const replied = emails.filter((m) => (m.stats.replies ?? 0) > 0).length;
+    return { sent: emails.length, opened, clicked, replied, pct };
   }, [messages]);
 
   return (
-    <section>
-      <div className="kpis">
+    <div className="page">
+      <header className="page-head">
+        <div>
+          <h1>Sent</h1>
+          <p className="muted">Every tracked email and link, newest first.</p>
+        </div>
+        <a className="button primary" href="#/compose">
+          <Icon name="pen" size={15} /> New email
+        </a>
+      </header>
+
+      <div className="kpis four">
         <div className="kpi">
           <div className="kpi-n">{totals.sent}</div>
           <div className="kpi-l">Emails{filter !== 'all' || q ? ' (filtered)' : ''}</div>
@@ -56,13 +69,23 @@ export function List() {
         <div className="kpi">
           <div className="kpi-n">
             {totals.opened}
-            {totals.sent > 0 && <span className="kpi-pct">{Math.round((totals.opened / totals.sent) * 100)}%</span>}
+            <span className="kpi-pct">{totals.pct(totals.opened)}</span>
           </div>
           <div className="kpi-l">Opened</div>
         </div>
         <div className="kpi">
-          <div className="kpi-n">{totals.clicked}</div>
+          <div className="kpi-n">
+            {totals.clicked}
+            <span className="kpi-pct">{totals.pct(totals.clicked)}</span>
+          </div>
           <div className="kpi-l">Clicked a link</div>
+        </div>
+        <div className="kpi">
+          <div className="kpi-n">
+            {totals.replied}
+            <span className="kpi-pct">{totals.pct(totals.replied)}</span>
+          </div>
+          <div className="kpi-l">Replied</div>
         </div>
       </div>
 
@@ -74,7 +97,10 @@ export function List() {
             </button>
           ))}
         </div>
-        <input className="search" placeholder="Search name, email, company, subject" value={q} onChange={(e) => setQ(e.target.value)} />
+        <div className="search-box">
+          <Icon name="search" size={15} />
+          <input placeholder="Search name, email, company, subject" value={q} onChange={(e) => setQ(e.target.value)} />
+        </div>
         <label className="check">
           <input type="checkbox" checked={archived} onChange={(e) => setArchived(e.target.checked)} /> Archived
         </label>
@@ -82,41 +108,50 @@ export function List() {
 
       {error && <p className="error">{error}</p>}
       {messages === null ? (
-        <p className="muted pad">Loading…</p>
+        <p className="muted">Loading…</p>
       ) : messages.length === 0 ? (
-        <div className="empty card">
-          <p>Nothing here yet.</p>
-          <a className="button primary" href="#/compose">
-            Write an email
-          </a>
+        <div className="card">
+          <Empty icon="✉" title="Nothing here yet">
+            <a className="button primary" href="#/compose">
+              Write an email
+            </a>
+          </Empty>
         </div>
       ) : (
         <div className="card rows">
           {messages.map((m) => {
             const status = statusOf(m);
+            const who = recipients(m);
             return (
               <button key={m._id} className="row" onClick={() => go(`/m/${m._id}`)}>
-                <span className={`pill ${status}`}>{STATUS_LABEL[status]}</span>
+                <Logo name={m.label || who} size={30} />
                 <span className="row-main">
                   <span className="row-who">
-                    {recipients(m)}
+                    {who}
                     {m.kind === 'email' && m.label && <span className="tag">{m.label}</span>}
                     {m.kind === 'link' && <span className="tag">link</span>}
+                    {m.followUpOf && <span className="tag">follow-up</span>}
                   </span>
                   <span className="row-sub muted">{m.kind === 'email' ? m.subject : m.links[0]?.url}</span>
                 </span>
                 <span className="row-counts">
-                  <span title="Opens">{m.kind === 'email' ? `${m.stats.opens} opens` : ''}</span>
-                  <span title="Clicks">{m.stats.clicks} clicks</span>
+                  {m.kind === 'email' && <span title="Opens">◉ {m.stats.opens}</span>}
+                  <span title="Clicks">↗ {m.stats.clicks}</span>
+                  {m.kind === 'email' && <span title="Replies">↩ {m.stats.replies ?? 0}</span>}
                 </span>
+                <span className={`pill ${status}`}>{STATUS_LABEL[status]}</span>
                 <span className="row-time muted" title={new Date(m.sentAt).toLocaleString()}>
-                  {m.stats.lastActivityAt ? `active ${ago(m.stats.lastActivityAt)}` : `sent ${ago(m.sentAt)}`}
+                  {m.status === 'scheduled'
+                    ? `sends ${ago(m.scheduledAt)}`
+                    : m.stats.lastActivityAt
+                      ? `active ${ago(m.stats.lastActivityAt)}`
+                      : `sent ${ago(m.sentAt)}`}
                 </span>
               </button>
             );
           })}
         </div>
       )}
-    </section>
+    </div>
   );
 }

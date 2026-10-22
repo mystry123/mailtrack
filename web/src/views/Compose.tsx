@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { renderBody, withSignature } from '../../../src/shared/render';
-import { api, type EnhanceResult, type Me, type SavedLink } from '../api';
+import { api, type Application, type EnhanceResult, type Me, type Message, type SavedLink, type Template } from '../api';
+import { AppPicker, Modal, StageBadge, type PickedApp } from '../components';
 import { insertBlock, insertText, link, prefixLines, wrap, type TextEdit } from '../editing';
-import { parseAddresses } from '../format';
+import { ago, parseAddresses } from '../format';
+import { Icon } from '../icons';
 import { go } from '../nav';
+import { describe, presets, wallTimeToDate, ZONES } from '../schedule';
 
 const DRAFT_KEY = 'mailtrack:draft';
 
@@ -14,9 +17,10 @@ interface Draft {
   subject: string;
   body: string;
   includeSignature: boolean;
+  app: PickedApp;
 }
 
-const EMPTY: Draft = { to: '', cc: '', label: '', subject: '', body: '', includeSignature: true };
+const EMPTY: Draft = { to: '', cc: '', label: '', subject: '', body: '', includeSignature: true, app: {} };
 
 function loadDraft(): Draft {
   try {
@@ -26,14 +30,27 @@ function loadDraft(): Draft {
   }
 }
 
+function saveDraft(d: Draft | null) {
+  try {
+    if (d) localStorage.setItem(DRAFT_KEY, JSON.stringify(d));
+    else localStorage.removeItem(DRAFT_KEY);
+  } catch {
+    // private mode: drafts just don't persist
+  }
+}
+
 const AI_PRESETS = [
   ['Polish', ''],
+  ['Tailor to the job', 'Tailor this to the role and job description: connect my real experience to what they need.'],
   ['Shorter', 'Make it shorter and punchier: 3-5 sentences, keep every link.'],
   ['More confident', 'Make it more confident and specific, without sounding arrogant.'],
   ['Friendlier', 'Make it warmer and more conversational.'],
   ['Fix grammar only', 'Only fix grammar, spelling and punctuation. Change nothing else.'],
   ['Better subject', 'Only improve the subject line; return the body unchanged.'],
 ] as const;
+
+const fmtAddr = (r: { email: string; name?: string }) => (r.name ? `${r.name} <${r.email}>` : r.email);
+const reSubject = (s: string) => (/^re:/i.test(s.trim()) ? s.trim() : `Re: ${s.trim()}`);
 
 interface AiState {
   busy: boolean;
@@ -42,35 +59,91 @@ interface AiState {
   previous: Pick<Draft, 'subject' | 'body'> | null;
 }
 
-export function Compose({ me }: { me: Me }) {
-  const [draft, setDraft] = useState<Draft>(loadDraft);
+interface DupCheck {
+  messages: Pick<Message, '_id' | 'subject' | 'to' | 'sentAt' | 'stats' | 'status'>[];
+  applications: Pick<Application, '_id' | 'company' | 'role' | 'stage'>[];
+}
+
+export function Compose({ me, params }: { me: Me; params: URLSearchParams }) {
+  const followUpId = params.get('followup');
+  const againId = params.get('again');
+  const appParam = params.get('app');
+  // Only a plain "New email" keeps a local draft; prefilled ones start from their source.
+  const plain = !followUpId && !againId && !appParam;
+
+  const [draft, setDraft] = useState<Draft>(() => (plain ? loadDraft() : { ...EMPTY, app: appParam ? { applicationId: appParam } : {} }));
+  const [followUp, setFollowUp] = useState<{ id: string; subject: string } | null>(null);
+  const [notice, setNotice] = useState('');
+  const [apps, setApps] = useState<Application[]>([]);
   const [saved, setSaved] = useState<SavedLink[]>([]);
+  const [templates, setTemplates] = useState<Template[]>([]);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
   const [instruction, setInstruction] = useState('');
   const [ai, setAi] = useState<AiState>({ busy: false, error: '', result: null, previous: null });
+  const [schedule, setSchedule] = useState<{ on: boolean; local: string; tz: string }>({ on: false, local: presets()[0].value, tz: '' });
+  const [dups, setDups] = useState<DupCheck | null>(null);
+  const [saveAs, setSaveAs] = useState<string | null>(null);
   const bodyRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     api<{ links: SavedLink[] }>('/api/saved-links').then((r) => setSaved(r.links)).catch(() => undefined);
+    api<{ applications: Application[] }>('/api/applications').then((r) => setApps(r.applications)).catch(() => undefined);
+    api<{ templates: Template[] }>('/api/templates').then((r) => setTemplates(r.templates)).catch(() => undefined);
   }, []);
 
+  // Prefill from a follow-up or "send again".
   useEffect(() => {
-    try {
-      localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
-    } catch {
-      // private mode: drafts just don't persist
-    }
-  }, [draft]);
+    const id = followUpId || againId;
+    if (!id) return;
+    api<{ message: Message }>(`/api/messages/${id}`)
+      .then(({ message: m }) => {
+        const app: PickedApp = m.applicationId ? { applicationId: m.applicationId } : {};
+        if (followUpId) {
+          setFollowUp({ id: m._id, subject: m.subject });
+          setDraft({ ...EMPTY, to: m.to.map(fmtAddr).join(', '), cc: m.cc.map(fmtAddr).join(', '), subject: reSubject(m.subject), label: m.label, app });
+        } else {
+          setDraft({
+            ...EMPTY,
+            to: m.to.map(fmtAddr).join(', '),
+            cc: m.cc.map(fmtAddr).join(', '),
+            subject: m.subject,
+            body: m.body ?? '',
+            label: m.label,
+            includeSignature: m.includeSignature ?? true,
+            app,
+          });
+          setNotice('Same subject and message as before. Change the recipients to send it somewhere new.');
+        }
+      })
+      .catch((e) => setError(e.message));
+  }, [followUpId, againId]);
 
-  const set = (k: 'to' | 'cc' | 'label' | 'subject' | 'body') => (e: { target: { value: string } }) =>
-    setDraft((d) => ({ ...d, [k]: e.target.value }));
+  useEffect(() => {
+    if (plain) saveDraft(draft);
+  }, [draft, plain]);
+
+  const set = (k: 'to' | 'cc' | 'subject' | 'body') => (e: { target: { value: string } }) => setDraft((d) => ({ ...d, [k]: e.target.value }));
 
   const hasSignature = !!me.signature.trim();
   const fullBody = draft.includeSignature ? withSignature(draft.body, me.signature) : draft.body;
   const preview = useMemo(() => renderBody(fullBody || ' '), [fullBody]);
   const to = parseAddresses(draft.to);
   const cc = parseAddresses(draft.cc);
+  const linkedApp = draft.app.applicationId ? apps.find((a) => a._id === draft.app.applicationId) : undefined;
+
+  // Warn before contacting someone (or a company) twice. Not for follow-ups: that's the point.
+  const toKey = to.ok.map((r) => r.email.toLowerCase()).join(',');
+  const company = linkedApp?.company ?? draft.app.newApplication?.company ?? '';
+  useEffect(() => {
+    if (followUp || (!toKey && !company)) return setDups(null);
+    const t = setTimeout(() => {
+      api<DupCheck>(`/api/contacts/check?${new URLSearchParams({ emails: toKey, company: draft.app.newApplication ? company : '' })}`)
+        .then(setDups)
+        .catch(() => setDups(null));
+    }, 500);
+    return () => clearTimeout(t);
+  }, [toKey, company, followUp, draft.app.newApplication]);
 
   const apply = (fn: (value: string, start: number, end: number) => TextEdit) => {
     const el = bodyRef.current;
@@ -101,12 +174,7 @@ export function Compose({ me }: { me: Me }) {
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (!(e.metaKey || e.ctrlKey)) return;
     const k = e.key.toLowerCase();
-    const map: Record<string, () => void> = {
-      b: TOOLS[0].run,
-      i: TOOLS[1].run,
-      u: TOOLS[2].run,
-      k: TOOLS[8].run,
-    };
+    const map: Record<string, () => void> = { b: TOOLS[0].run, i: TOOLS[1].run, u: TOOLS[2].run, k: TOOLS[8].run };
     if (map[k]) {
       e.preventDefault();
       map[k]();
@@ -116,21 +184,34 @@ export function Compose({ me }: { me: Me }) {
     }
   };
 
-  const enhance = async (preset?: string) => {
-    const ask = preset ?? instruction.trim();
+  const runAi = async (call: () => Promise<EnhanceResult>) => {
     setAi((a) => ({ ...a, busy: true, error: '' }));
     try {
-      const result = await api<EnhanceResult>('/api/ai/enhance', {
-        method: 'POST',
-        body: { subject: draft.subject, body: draft.body, instruction: ask, to: draft.to, label: draft.label },
-      });
+      const result = await call();
       setAi({ busy: false, error: '', result, previous: { subject: draft.subject, body: draft.body } });
-      setDraft((d) => ({ ...d, subject: result.subject || d.subject, body: result.body }));
-      if (!preset) setInstruction('');
+      setDraft((d) => ({ ...d, subject: followUp ? d.subject : result.subject || d.subject, body: result.body }));
     } catch (err) {
       setAi((a) => ({ ...a, busy: false, error: (err as Error).message }));
     }
   };
+
+  const enhance = (preset?: string) =>
+    runAi(() =>
+      api<EnhanceResult>('/api/ai/enhance', {
+        method: 'POST',
+        body: {
+          subject: draft.subject,
+          body: draft.body,
+          instruction: preset ?? instruction.trim(),
+          to: draft.to,
+          label: draft.label,
+          applicationId: draft.app.applicationId,
+        },
+      }),
+    ).then(() => !preset && setInstruction(''));
+
+  const draftFollowUp = () =>
+    runAi(() => api<EnhanceResult>('/api/ai/followup', { method: 'POST', body: { messageId: followUp!.id, instruction: instruction.trim() } }));
 
   const undoAi = () => {
     if (!ai.previous) return;
@@ -138,11 +219,26 @@ export function Compose({ me }: { me: Me }) {
     setAi({ busy: false, error: '', result: null, previous: null });
   };
 
+  const applyTemplate = (t: Template) => {
+    setDraft((d) => ({ ...d, subject: t.subject || d.subject, body: t.body }));
+    setNotice(`Template "${t.name}" applied.`);
+  };
+
+  const saveTemplate = async (name: string) => {
+    const r = await api<{ template: Template }>('/api/templates', { method: 'POST', body: { name, subject: draft.subject, body: draft.body } });
+    setTemplates((ts) => [r.template, ...ts.filter((t) => t._id !== r.template._id)]);
+    setSaveAs(null);
+    setNotice(`Saved as template "${name}".`);
+  };
+
+  const scheduledAt = schedule.on && schedule.local ? wallTimeToDate(schedule.local, schedule.tz) : null;
+
   const problems: string[] = [];
   if (to.ok.length === 0) problems.push('Add at least one recipient');
   if (to.bad.length || cc.bad.length) problems.push(`Not an email address: ${[...to.bad, ...cc.bad].join(', ')}`);
   if (!draft.subject.trim()) problems.push('Add a subject');
   if (!draft.body.trim()) problems.push('Write something');
+  if (scheduledAt && scheduledAt.getTime() < Date.now()) problems.push('Pick a time in the future');
 
   const send = async () => {
     if (sending) return;
@@ -159,13 +255,12 @@ export function Compose({ me }: { me: Me }) {
           body: draft.body,
           label: draft.label,
           includeSignature: draft.includeSignature,
+          ...draft.app,
+          followUpOf: followUp?.id,
+          scheduledAt: scheduledAt?.toISOString(),
         },
       });
-      try {
-        localStorage.removeItem(DRAFT_KEY);
-      } catch {
-        // ignore
-      }
+      if (plain) saveDraft(null);
       go(`/m/${r.message._id}`);
     } catch (e) {
       setError((e as Error).message);
@@ -175,139 +270,278 @@ export function Compose({ me }: { me: Me }) {
   };
 
   return (
-    <section className="compose">
-      <div className="card form">
-        <div className="from muted small">From {me.fromName || me.name ? `${me.fromName || me.name} <${me.email}>` : me.email}</div>
-        <label>
-          To
-          <input value={draft.to} onChange={set('to')} placeholder="Jane Doe <jane@company.com>, other@company.com" />
-        </label>
-        <label>
-          Cc
-          <input value={draft.cc} onChange={set('cc')} placeholder="optional" />
-        </label>
-        <div className="two">
+    <div className="page">
+      <header className="page-head">
+        <div>
+          <h1>{followUp ? 'Follow up' : againId ? 'Send again' : 'New email'}</h1>
+          <p className="muted">
+            {followUp ? (
+              <>
+                Goes into the same Gmail thread as “{followUp.subject}”.
+              </>
+            ) : (
+              'Opens, clicks and replies are tracked automatically.'
+            )}
+          </p>
+        </div>
+        {templates.length > 0 && !followUp && (
+          <select
+            className="template-select"
+            value=""
+            onChange={(e) => {
+              const t = templates.find((x) => x._id === e.target.value);
+              if (t) applyTemplate(t);
+            }}
+            aria-label="Use a template"
+          >
+            <option value="">Use a template…</option>
+            {templates.map((t) => (
+              <option key={t._id} value={t._id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        )}
+      </header>
+
+      <div className="compose">
+        <div className="card form">
+          {notice && <div className="notice">{notice}</div>}
+          <div className="from muted small">From {me.fromName || me.name ? `${me.fromName || me.name} <${me.email}>` : me.email}</div>
           <label>
-            Company / tag
-            <input value={draft.label} onChange={set('label')} placeholder="Cardboard" />
+            To
+            <input value={draft.to} onChange={set('to')} placeholder="Jane Doe <jane@company.com>, other@company.com" />
           </label>
           <label>
-            Subject
-            <input value={draft.subject} onChange={set('subject')} />
+            Cc
+            <input value={draft.cc} onChange={set('cc')} placeholder="optional" />
           </label>
-        </div>
-
-        <div className="field-label">Message</div>
-        <div className="editor">
-          <div className="toolbar-row" role="toolbar" aria-label="Formatting">
-            {TOOLS.map((t) => (
-              <button
-                key={t.title}
-                type="button"
-                className={`tool ${t.className ?? ''}`}
-                title={t.title}
-                aria-label={t.title}
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={t.run}
-              >
-                {t.label}
-              </button>
-            ))}
-            {saved.length > 0 && <span className="tool-sep" />}
-            {saved.map((l) => (
-              <button
-                key={l.label}
-                type="button"
-                className="tool chip-tool"
-                title={`Insert ${l.url}`}
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => apply((v, s, e) => insertText(v, s, e, `[${l.label}](${l.url})`))}
-              >
-                + {l.label}
-              </button>
-            ))}
+          <div className="two">
+            <label>
+              Company
+              <AppPicker
+                value={draft.app}
+                apps={apps}
+                onChange={({ label, ...app }) => setDraft((d) => ({ ...d, app, label }))}
+              />
+            </label>
+            <label>
+              Subject
+              <input value={draft.subject} onChange={set('subject')} />
+            </label>
           </div>
-          <textarea ref={bodyRef} value={draft.body} onChange={set('body')} onKeyDown={onKeyDown} rows={14} />
-        </div>
-        <div className="hint small muted">
-          Select text and use the toolbar or ⌘B / ⌘I / ⌘U / ⌘K. Every link is tracked. ⌘↵ sends.
-        </div>
-
-        <div className="ai">
-          <div className="ai-head">
-            <span className="ai-badge">✦ Gemini</span>
-            <span className="small muted">3.1 Pro rewrites the subject and message; links stay as they are.</span>
-          </div>
-          <div className="chips">
-            {AI_PRESETS.map(([label, ask]) => (
-              <button key={label} type="button" className="chip" disabled={ai.busy || !draft.body.trim()} onClick={() => enhance(ask)}>
-                {label}
-              </button>
-            ))}
-          </div>
-          <div className="ai-ask">
-            <input
-              value={instruction}
-              onChange={(e) => setInstruction(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && instruction.trim() && enhance()}
-              placeholder={draft.body.trim() ? 'Or say what to change: "mention the AI captions work"' : 'Describe the email and Gemini drafts it'}
-              disabled={ai.busy}
-            />
-            <button type="button" className="primary" disabled={ai.busy || !instruction.trim()} onClick={() => enhance()}>
-              {ai.busy ? 'Thinking…' : draft.body.trim() ? 'Rewrite' : 'Draft'}
-            </button>
-          </div>
-          {ai.busy && <p className="small muted">Gemini is working on it, usually 10–20 seconds.</p>}
-          {ai.error && <p className="error small">{ai.error}</p>}
-          {ai.result && ai.previous && (
-            <div className="ai-result">
-              <div>
-                {ai.result.notes && <p className="small">{ai.result.notes}</p>}
-                {ai.result.warnings.map((w) => (
-                  <p key={w} className="error small">
-                    {w}
-                  </p>
-                ))}
-              </div>
-              <button type="button" className="ghost small" onClick={undoAi}>
-                Undo
-              </button>
+          {linkedApp && (
+            <div className="linked small muted">
+              Linked to <a href={`#/a/${linkedApp._id}`}>{linkedApp.company}</a> <StageBadge stage={linkedApp.stage} />
+              {!followUp && linkedApp.stage === 'wishlist' && ' · moves to Reached out when sent'}
             </div>
           )}
+
+          {dups && (dups.messages.length > 0 || dups.applications.length > 0) && (
+            <div className="dup-warning">
+              <strong>Heads up:</strong>
+              {dups.messages.slice(0, 3).map((m) => (
+                <div key={m._id}>
+                  You emailed {m.to.map((r) => r.email).join(', ')} {ago(m.sentAt)} (“<a href={`#/m/${m._id}`}>{m.subject}</a>”)
+                  {m.stats.replies ? ', and they replied' : m.stats.opens ? `, opened ${m.stats.opens}×` : ', no opens yet'}.
+                </div>
+              ))}
+              {dups.applications.map((a) => (
+                <div key={a._id}>
+                  <a href={`#/a/${a._id}`}>{a.company}</a> is already in your pipeline ({a.role || 'no role'}): pick it above to link this email.
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="field-label">Message</div>
+          <div className="editor">
+            <div className="toolbar-row" role="toolbar" aria-label="Formatting">
+              {TOOLS.map((t) => (
+                <button
+                  key={t.title}
+                  type="button"
+                  className={`tool ${t.className ?? ''}`}
+                  title={t.title}
+                  aria-label={t.title}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={t.run}
+                >
+                  {t.label}
+                </button>
+              ))}
+              {saved.length > 0 && <span className="tool-sep" />}
+              {saved.map((l) => (
+                <button
+                  key={l.label}
+                  type="button"
+                  className="tool chip-tool"
+                  title={`Insert ${l.url}`}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => apply((v, s, e) => insertText(v, s, e, `[${l.label}](${l.url})`))}
+                >
+                  + {l.label}
+                </button>
+              ))}
+            </div>
+            <textarea ref={bodyRef} value={draft.body} onChange={set('body')} onKeyDown={onKeyDown} rows={14} />
+          </div>
+          <div className="hint small muted">⌘B / ⌘I / ⌘U / ⌘K format · ⌘↵ sends · every link is tracked</div>
+
+          <div className="ai">
+            <div className="ai-head">
+              <span className="ai-badge">
+                <Icon name="spark" size={14} /> Gemini
+              </span>
+              <span className="small muted">
+                {followUp ? 'Drafts a short follow-up from your original email.' : '3.1 Pro rewrites the subject and message; links stay as they are.'}
+              </span>
+            </div>
+            {followUp ? (
+              <div className="ai-ask">
+                <input
+                  value={instruction}
+                  onChange={(e) => setInstruction(e.target.value)}
+                  placeholder="Optional: “mention I shipped AI captions last week”"
+                  disabled={ai.busy}
+                />
+                <button type="button" className="primary" disabled={ai.busy} onClick={draftFollowUp}>
+                  {ai.busy ? 'Thinking…' : 'Draft follow-up'}
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="chips">
+                  {AI_PRESETS.filter(([l]) => l !== 'Tailor to the job' || draft.app.applicationId).map(([label, ask]) => (
+                    <button
+                      key={label}
+                      type="button"
+                      className="chip"
+                      disabled={ai.busy || (!draft.body.trim() && label !== 'Tailor to the job')}
+                      onClick={() => enhance(ask)}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <div className="ai-ask">
+                  <input
+                    value={instruction}
+                    onChange={(e) => setInstruction(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && instruction.trim() && enhance()}
+                    placeholder={draft.body.trim() ? 'Or say what to change: “mention the AI captions work”' : 'Describe the email and Gemini drafts it'}
+                    disabled={ai.busy}
+                  />
+                  <button type="button" className="primary" disabled={ai.busy || !instruction.trim()} onClick={() => enhance()}>
+                    {ai.busy ? 'Thinking…' : draft.body.trim() ? 'Rewrite' : 'Draft'}
+                  </button>
+                </div>
+              </>
+            )}
+            {ai.busy && <p className="small muted">Gemini is working on it, usually 10–20 seconds.</p>}
+            {ai.error && <p className="error small">{ai.error}</p>}
+            {ai.result && ai.previous && (
+              <div className="ai-result">
+                <div>
+                  {ai.result.notes && <p className="small">{ai.result.notes}</p>}
+                  {ai.result.warnings.map((w) => (
+                    <p key={w} className="error small">
+                      {w}
+                    </p>
+                  ))}
+                </div>
+                <button type="button" className="ghost small" onClick={undoAi}>
+                  Undo
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="send-options">
+            {hasSignature ? (
+              <label className="check">
+                <input type="checkbox" checked={draft.includeSignature} onChange={(e) => setDraft((d) => ({ ...d, includeSignature: e.target.checked }))} />
+                Signature
+              </label>
+            ) : (
+              <span className="small muted">
+                Add a signature in <a href="#/settings">Settings</a>
+              </span>
+            )}
+            <label className="check">
+              <input type="checkbox" checked={schedule.on} onChange={(e) => setSchedule({ ...schedule, on: e.target.checked })} />
+              Send later
+            </label>
+            {!followUp && (
+              <button type="button" className="link-btn small" onClick={() => setSaveAs(draft.subject || 'My template')} disabled={!draft.body.trim()}>
+                Save as template
+              </button>
+            )}
+          </div>
+
+          {schedule.on && (
+            <div className="schedule">
+              <div className="chips">
+                {presets().map((p) => (
+                  <button key={p.label} type="button" className={schedule.local === p.value ? 'chip on' : 'chip'} onClick={() => setSchedule({ ...schedule, local: p.value })}>
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+              <div className="two">
+                <input type="datetime-local" value={schedule.local} onChange={(e) => setSchedule({ ...schedule, local: e.target.value })} aria-label="Send at" />
+                <select value={schedule.tz} onChange={(e) => setSchedule({ ...schedule, tz: e.target.value })} aria-label="Time zone">
+                  {ZONES.map((z) => (
+                    <option key={z.id} value={z.id}>
+                      {z.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {scheduledAt && !isNaN(scheduledAt.getTime()) && <div className="small muted">Sends {describe(scheduledAt, schedule.tz)}. Mornings get opened most.</div>}
+            </div>
+          )}
+
+          {error && <p className="error">{error}</p>}
+          <div className="actions">
+            {plain && (
+              <button className="ghost" onClick={() => setDraft({ ...EMPTY, includeSignature: draft.includeSignature })} disabled={sending}>
+                Clear
+              </button>
+            )}
+            <button className="primary" onClick={send} disabled={sending || me.needsReauth}>
+              {sending ? 'Sending…' : schedule.on ? 'Schedule' : followUp ? 'Send follow-up' : 'Send tracked email'}
+            </button>
+          </div>
         </div>
 
-        {hasSignature ? (
-          <label className="check inline">
-            <input
-              type="checkbox"
-              checked={draft.includeSignature}
-              onChange={(e) => setDraft((d) => ({ ...d, includeSignature: e.target.checked }))}
-            />
-            Include signature
-          </label>
-        ) : (
-          <p className="small muted">
-            Add a signature and "about me" for Gemini in <a href="#/settings">Settings</a>.
-          </p>
-        )}
-
-        {error && <p className="error">{error}</p>}
-        <div className="actions">
-          <button className="ghost" onClick={() => setDraft({ ...EMPTY, includeSignature: draft.includeSignature })} disabled={sending}>
-            Clear
-          </button>
-          <button className="primary" onClick={send} disabled={sending || me.needsReauth}>
-            {sending ? 'Sending…' : 'Send tracked email'}
-          </button>
+        <div className="card preview-card">
+          <h2>Preview</h2>
+          <div className="preview-subject">{draft.subject || <span className="muted">No subject</span>}</div>
+          <iframe className="preview" sandbox="" srcDoc={preview.html} title="Preview" />
+          {preview.links.length > 0 && <div className="small muted">Tracked links: {preview.links.map((l) => l.label).join(' · ')}</div>}
         </div>
       </div>
 
-      <div className="card preview-card">
-        <h2>Preview</h2>
-        <div className="preview-subject">{draft.subject || <span className="muted">No subject</span>}</div>
-        <iframe className="preview" sandbox="" srcDoc={preview.html} title="Preview" />
-        {preview.links.length > 0 && <div className="small muted">Tracked links: {preview.links.map((l) => l.label).join(' · ')}</div>}
-      </div>
-    </section>
+      {saveAs !== null && (
+        <Modal title="Save as template" onClose={() => setSaveAs(null)}>
+          <div className="form">
+            <label>
+              Name
+              <input autoFocus value={saveAs} onChange={(e) => setSaveAs(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && saveAs.trim() && saveTemplate(saveAs.trim())} />
+            </label>
+            <p className="small muted">Saves the subject and message (not the recipients). The same name overwrites.</p>
+            <div className="actions">
+              <button className="ghost" onClick={() => setSaveAs(null)}>
+                Cancel
+              </button>
+              <button className="primary" disabled={!saveAs.trim()} onClick={() => saveTemplate(saveAs.trim())}>
+                Save
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </div>
   );
 }

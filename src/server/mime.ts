@@ -12,6 +12,8 @@ export interface MimeInput {
   subject: string;
   text: string;
   html: string;
+  // Message-ID / In-Reply-To / References for threading.
+  headers?: Record<string, string>;
 }
 
 // Header values come from user input; never let them start a new header.
@@ -40,6 +42,7 @@ export function buildMime(m: MimeInput, boundary: string): string {
     `To: ${m.to.map(formatAddress).join(', ')}`,
     ...(m.cc.length ? [`Cc: ${m.cc.map(formatAddress).join(', ')}`] : []),
     `Subject: ${encodeWord(clean(m.subject))}`,
+    ...Object.entries(m.headers ?? {}).map(([k, v]) => `${k}: ${clean(v)}`),
     'MIME-Version: 1.0',
     `Content-Type: multipart/alternative; boundary="${boundary}"`,
   ];
