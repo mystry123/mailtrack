@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { renderBody, withSignature } from './render.js';
+import { isDirectLink, renderBody, withSignature } from './render.js';
 
 const track = (_l: unknown, i: number) => `https://t/l/${i}`;
 
@@ -68,5 +68,14 @@ describe('renderBody', () => {
     const r = renderBody(withSignature('Hello', '**Ritik**\nshotline.in'));
     expect(r.html).toContain('<strong>Ritik</strong>');
     expect(withSignature('Hello', '  ')).toBe('Hello');
+  });
+});
+
+describe('isDirectLink', () => {
+  it('sends Google Drive and Docs links as they are', () => {
+    expect(isDirectLink('https://drive.google.com/file/d/abc/view')).toBe(true);
+    expect(isDirectLink('https://docs.google.com/document/d/abc/edit')).toBe(true);
+    expect(isDirectLink('https://shotline.in')).toBe(false);
+    expect(isDirectLink('https://drive.google.com.evil.example/x')).toBe(false);
   });
 });

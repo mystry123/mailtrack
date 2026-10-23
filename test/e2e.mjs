@@ -174,7 +174,7 @@ async function main() {
     const { data } = await post('/api/messages/send', {
       to: [{ email: 'jane@acme.example', name: 'Jane Doe' }],
       subject: 'Fullstack role at Acme',
-      body: 'Hi Jane, here is [my resume](https://example.com/cv-backend).',
+      body: 'Hi Jane, here is [my resume](https://example.com/cv-backend) and [my CV on Drive](https://drive.google.com/file/d/abc123/view).',
       newApplication: { company: 'Acme', role: 'Fullstack Engineer', source: 'cold_email' },
       sequenceDays: [4, 9],
       templateId: ids.template,
@@ -186,6 +186,7 @@ async function main() {
     assert.match(decoded(box[0].raw), /\/o\/[A-Za-z0-9]+\.gif/, 'has the open pixel');
     assert.match(decoded(box[0].raw), /\/l\/[A-Za-z0-9]+/, 'links are tracked');
     assert.doesNotMatch(decoded(box[0].raw), /example\.com\/cv-backend/, 'raw URL is not exposed');
+    assert.match(decoded(box[0].raw), /href="https:\/\/drive\.google\.com\/file\/d\/abc123\/view"/, 'Drive links go out directly');
     assert.deepEqual(box[0].to, ['jane@acme.example']);
   });
   await step('the company was created at Reached out, with a contact', async () => {

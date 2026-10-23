@@ -20,6 +20,9 @@ export interface Rendered {
   links: FoundLink[];
 }
 
+// Google Drive / Docs links (resumes) are sent as they are, never through the click redirect.
+export const isDirectLink = (url: string) => /^https?:\/\/(drive|docs)\.google\.com\//i.test(url);
+
 export type MapUrl = (link: FoundLink, index: number) => string;
 
 type LinkToken = (Tokens.Link | Tokens.Image) & { mappedHref?: string; plainOnly?: boolean };

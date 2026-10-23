@@ -7,10 +7,18 @@ import { logger } from './logger.js';
 import { AccountModel, ApplicationModel, ContactModel, MessageModel } from './models.js';
 import { advance } from './pipeline.js';
 import { buildSteps, draftMissingSteps } from './sequences.js';
-import { renderBody, withSignature } from '../shared/render.js';
+import { isDirectLink, renderBody, withSignature } from '../shared/render.js';
 import { currentUserId } from './context.js';
 
 export const trackedUrl = (token: string) => `${env.PUBLIC_URL}/l/${token}`;
+
+// Markdown to email HTML. Links become tracked redirects, except Drive/Docs ones.
+export function renderForSend(markdown: string) {
+  const linkTokens: string[] = [];
+  const rendered = renderBody(markdown, (l, i) => (isDirectLink(l.url) ? l.url : trackedUrl((linkTokens[i] = newToken()))));
+  return { ...rendered, links: rendered.links.map((l, i) => ({ ...l, token: linkTokens[i] })).filter((l) => l.token) };
+}
+
 const pixelTag = (token: string) =>
   `<img src="${env.PUBLIC_URL}/o/${token}.gif" width="1" height="1" alt="" style="display:block;width:1px;height:1px;border:0">`;
 
@@ -60,8 +68,7 @@ export async function assertUnderCap(extra = 0): Promise<void> {
 export async function createEmail(input: ComposeInput): Promise<MessageDoc> {
   const account = await AccountModel.findById(currentUserId()).lean();
   const full = input.includeSignature ? withSignature(input.body, account?.signature) : input.body;
-  const linkTokens: string[] = [];
-  const rendered = renderBody(full, (_link, i) => trackedUrl((linkTokens[i] = newToken())));
+  const rendered = renderForSend(full);
 
   let label = input.label;
   if (input.applicationId && !label) {
@@ -85,7 +92,7 @@ export async function createEmail(input: ComposeInput): Promise<MessageDoc> {
     includeSignature: input.includeSignature,
     html: rendered.html,
     text: rendered.text,
-    links: rendered.links.map((l, i) => ({ ...l, token: linkTokens[i] })),
+    links: rendered.links,
     sentAt: input.scheduledAt ?? new Date(),
     trackOpens: input.trackOpens ?? true,
     templateId: input.templateId,

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { lintEmail } from '../../../src/shared/lint';
-import { renderBody, withSignature } from '../../../src/shared/render';
+import { isDirectLink, renderBody, withSignature } from '../../../src/shared/render';
 import { api, type Application, type EnhanceResult, type Me, type Message, type SavedLink, type Template } from '../api';
 import { AppPicker, Modal, StageBadge, type PickedApp } from '../components';
 import { insertBlock, insertText, link, prefixLines, wrap, type TextEdit } from '../editing';
@@ -434,7 +434,7 @@ export function Compose({ me, params }: { me: Me; params: URLSearchParams }) {
             </div>
             <textarea ref={bodyRef} value={draft.body} onChange={set('body')} onKeyDown={onKeyDown} rows={14} />
           </div>
-          <div className="hint small muted">⌘B / ⌘I / ⌘U / ⌘K format · ⌘↵ sends · every link is tracked</div>
+          <div className="hint small muted">⌘B / ⌘I / ⌘U / ⌘K format · ⌘↵ sends · links are tracked, Google Drive links go direct</div>
           {draft.body.trim() && lint.length > 0 && (
             <ul className="lint">
               {lint.map((l) => (
@@ -618,7 +618,12 @@ export function Compose({ me, params }: { me: Me; params: URLSearchParams }) {
           <h2>Preview</h2>
           <div className="preview-subject">{draft.subject || <span className="muted">No subject</span>}</div>
           <iframe className="preview" sandbox="" srcDoc={preview.html} title="Preview" />
-          {preview.links.length > 0 && <div className="small muted">Tracked links: {preview.links.map((l) => l.label).join(' · ')}</div>}
+          {preview.links.length > 0 && (
+            <div className="small muted">
+              {preview.links.some((l) => !isDirectLink(l.url)) && <>Tracked links: {preview.links.filter((l) => !isDirectLink(l.url)).map((l) => l.label).join(' · ')}</>}
+              {preview.links.some((l) => isDirectLink(l.url)) && <> Direct (not tracked): {preview.links.filter((l) => isDirectLink(l.url)).map((l) => l.label).join(' · ')}</>}
+            </div>
+          )}
         </div>
       </div>
 
