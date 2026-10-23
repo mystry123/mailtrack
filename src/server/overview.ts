@@ -1,5 +1,5 @@
 import { env } from './env.js';
-import { AccountModel, ApplicationModel, EventModel, MessageModel, SettingModel, TemplateModel, type Application, type Message } from './models.js';
+import { AccountModel, ApplicationModel, EventModel, MessageModel, ResumeModel, SettingModel, TemplateModel, type Application, type Message } from './models.js';
 import { addBusinessDays, furthestRank, isOpenStage, stageRank, SOURCES } from '../shared/stages.js';
 import { currentUserId } from './context.js';
 
@@ -209,7 +209,7 @@ export async function insights() {
     };
   }).filter((s) => s.started > 0);
 
-  const emails = await MessageModel.find(sentOnly).select('sentAt stats followUpOf templateId subject links automatic gmailThreadId').lean<Lean<Message>[]>();
+  const emails = await MessageModel.find(sentOnly).select('sentAt stats followUpOf templateId resumeId subject body links automatic gmailThreadId').lean<Lean<Message>[]>();
   const firsts = emails.filter((m) => !m.followUpOf);
   const replyDays = firsts
     .filter((m) => m.stats?.firstReplyAt)
@@ -234,11 +234,20 @@ export async function insights() {
     .filter((t) => t.sent > 0)
     .sort((a, b) => b.replied / b.sent - a.replied / a.sent);
 
+  // Your resumes: emails that carried each one (picked in Compose, or containing its link).
+  const resumes = await ResumeModel.find().select('name url').lean();
+  const byResume = resumes
+    .map((r) => ({
+      name: r.name,
+      ...rate(firsts.filter((m) => (m.resumeId ? String(m.resumeId) === String(r._id) : (m.body ?? '').includes(r.url)))),
+    }))
+    .filter((r) => r.sent > 0);
+
   // Saved links (resume versions, portfolio…): how emails containing each one did.
   const saved = ((await SettingModel.findOne({ key: 'savedLinks' }).lean())?.value ?? []) as { label: string; url: string }[];
   const byLink = saved
     .map((l) => {
-      const group = firsts.filter((m) => m.links.some((x) => x.url === l.url));
+      const group = firsts.filter((m) => m.links.some((x) => x.url === l.url) || (m.body ?? '').includes(l.url));
       return { label: l.label, ...rate(group), linkClicks: group.reduce((n, m) => n + m.links.filter((x) => x.url === l.url).reduce((c, x) => c + (x.clicks ?? 0), 0), 0) };
     })
     .filter((l) => l.sent > 0);
@@ -259,6 +268,7 @@ export async function insights() {
     funnel,
     bySource,
     byTemplate,
+    byResume,
     byLink,
     bySubject,
     sequences: { sent: emails.filter((m) => m.automatic).length, replies: autoReplies },

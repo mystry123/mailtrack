@@ -10,6 +10,7 @@ import { logger } from './logger.js';
 import { apiRouter } from './routes/api.js';
 import { applicationsRouter } from './routes/applications.js';
 import { contactsRouter } from './routes/contacts.js';
+import { resumesRouter } from './routes/resumes.js';
 import { startJobs } from './jobs.js';
 import { asSystem } from './context.js';
 import { AccountModel, ApplicationModel, ContactModel, EventModel, MessageModel, SettingModel, TemplateModel } from './models.js';
@@ -43,6 +44,7 @@ app.use(trackRouter);
 app.use('/auth', express.json({ limit: '10kb' }), authRouter);
 app.use('/api/applications', express.json({ limit: '200kb' }), applicationsRouter);
 app.use('/api/contacts', express.json({ limit: '50kb' }), contactsRouter);
+app.use('/api/resumes', express.json({ limit: '100kb' }), resumesRouter);
 if (env.NODE_ENV === 'test') {
   const { testingRouter } = await import('./routes/testing.js');
   app.use('/api/test', express.json(), testingRouter);

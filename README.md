@@ -35,7 +35,9 @@ Viewing your own Sent copy goes through the same Gmail image proxy as the recipi
 - **People**: everyone you email becomes a contact; add friends and ex-colleagues; Gemini drafts referral asks; "Find who to email" searches for founders/hiring managers and guesses addresses from common patterns and ones you've already emailed (optional `HUNTER_API_KEY` for verified lookups).
 - **Chrome extension**: Save to Mailtrack on job pages (JSON-LD first, then per-site selectors), with ghost-job signals (age, reposts, no salary).
 - **Sending safety**: daily cap (default 50, counts everything incl. automatic), pre-send checks (`src/shared/lint.ts`), optional open tracking per email.
-- **Insights**: reply rate by template, by resume version (saved links) and by subject; weekly Monday digest email.
+- **Insights**: reply rate by template, by resume and by subject; weekly Monday digest email.
+- **Resumes**: add each version (AI, full-stack, voice, backend…) in Settings as a Google Drive PDF or Google Doc link shared as "Anyone with the link". Mailtrack reads its text once; Compose suggests the best one for the linked job (Gemini, keyword match as fallback) and puts its link in the email with one click.
+- **Google Drive / Docs links are never tracked**: they go out as the plain Drive URL (resumes should open straight from Drive). Other links go through the click redirect.
 
 ## Multiple users
 

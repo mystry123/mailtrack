@@ -156,6 +156,24 @@ await step('stop all follow-ups', async () => {
   await until('document.body.innerText.includes("Stopped by you")', 'stopped');
 });
 
+await step('compose: pick a resume and swap it', async () => {
+  await go('/compose');
+  await until('!!document.querySelector(".resume-row")', 'resume picker');
+  await type('.editor textarea', 'Hi Maya,\n\nThanks,\nRitik');
+  const body = () => evaluate('document.querySelector(".editor textarea").value');
+  await clickText('Voice AI', '.resume-row button');
+  await until('document.querySelector(".editor textarea").value.includes("VOICEresume123")', 'voice resume inserted');
+  assert.match(await body(), /\*\*Resume:\*\* \[View Resume\]\(https:\/\/drive\.google\.com\/file\/d\/VOICEresume123\/view\)\n\nThanks,/);
+  assert.equal(await evaluate('document.querySelector(".resume-row .chip.on")?.textContent'), 'Voice AI');
+  await clickText('AI Engineer', '.resume-row button');
+  await until('document.querySelector(".editor textarea").value.includes("AIresume12345")', 'swapped');
+  assert.doesNotMatch(await body(), /VOICEresume123/);
+  assert.match(await bodyText(), /Direct \(not tracked\): View Resume/);
+  await clickText('Clear');
+  await go('/settings');
+  await until('document.body.innerText.includes("Resumes") && document.body.innerText.includes("Voice AI")', 'resumes in Settings');
+});
+
 await step('Today: accept a stage suggestion', async () => {
   await go('/');
   const has = await until('document.body.innerText', 'today');

@@ -286,7 +286,7 @@ export function InsightsView() {
                   withdrawn
                 </p>
               </section>
-              {(data.byTemplate.length > 0 || data.byLink.length > 0 || data.bySubject.length > 0) && (
+              {(data.byTemplate.length > 0 || data.byResume.length > 0 || data.byLink.length > 0 || data.bySubject.length > 0) && (
                 <section className="card">
                   <h2>What gets replies</h2>
                   {data.byTemplate.length > 0 && (
@@ -295,9 +295,15 @@ export function InsightsView() {
                       <RateBars rows={data.byTemplate.map((t) => ({ label: t.name, sent: t.sent, replied: t.replied }))} />
                     </>
                   )}
+                  {data.byResume.length > 0 && (
+                    <>
+                      <div className="eyebrow chart-label">By resume</div>
+                      <RateBars rows={data.byResume.map((r) => ({ label: r.name, sent: r.sent, replied: r.replied }))} />
+                    </>
+                  )}
                   {data.byLink.length > 0 && (
                     <>
-                      <div className="eyebrow chart-label">By resume version / link</div>
+                      <div className="eyebrow chart-label">By saved link</div>
                       <RateBars rows={data.byLink.map((l) => ({ label: l.label, sent: l.sent, replied: l.replied, extra: `${l.linkClicks} clicks on it` }))} />
                     </>
                   )}
@@ -307,7 +313,7 @@ export function InsightsView() {
                       <RateBars rows={data.bySubject.map((s) => ({ label: s.subject, sent: s.sent, replied: s.replied }))} />
                     </>
                   )}
-                  <p className="muted small">Counts a whole thread as replied if any email in it got a reply. Add resume versions as saved links in Settings to compare them.</p>
+                  <p className="muted small">Counts a whole thread as replied if any email in it got a reply. Add your resumes in Settings to compare them.</p>
                 </section>
               )}
               <section className="card">

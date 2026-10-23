@@ -15,7 +15,7 @@ class Retryable extends Error {}
 
 interface GenerateRequest {
   // What this call is for (test fakes answer by kind).
-  kind: 'email' | 'followup' | 'thankyou' | 'referral' | 'reply' | 'prep' | 'people' | 'brief';
+  kind: 'email' | 'followup' | 'thankyou' | 'referral' | 'reply' | 'prep' | 'people' | 'brief' | 'resume';
   system: string;
   prompt: string;
   // Answer as JSON matching this Vertex schema.
@@ -359,4 +359,31 @@ Only people search results show currently work there. Answer with JSON only, no 
     people = [];
   }
   return { people, sources: raw.sources.slice(0, 6) };
+}
+
+export interface ResumeChoice {
+  // Index into the resumes given.
+  index: number;
+  reason: string;
+  model: string;
+}
+
+// Which of the sender's resumes fits this job best, with a one-line reason.
+export async function chooseResume(job: JobContext, resumes: { name: string; text: string }[]): Promise<ResumeChoice> {
+  const system = `A job seeker keeps several versions of their resume. Pick the one that fits this job best: match the role's core skills and seniority, not shared buzzwords.
+Return "resume" (the number of the best resume) and "reason": one short sentence naming the 1-2 things in the job it matches, e.g. "The JD is about TTS and voice cloning".`;
+  const prompt = [
+    jobBlock(job),
+    ...resumes.map((r, i) => `### Resume ${i + 1}: ${r.name}\n${r.text.slice(0, 6_000) || '(text not available: judge by the name)'}`),
+  ].join('\n\n');
+  const raw = await generate({
+    kind: 'resume',
+    system,
+    prompt,
+    schema: { type: 'OBJECT', properties: { resume: { type: 'INTEGER' }, reason: { type: 'STRING' } }, required: ['resume', 'reason'] },
+  });
+  const parsed = JSON.parse(raw.text) as { resume: number; reason: string };
+  const index = Math.round(Number(parsed.resume)) - 1;
+  if (!(index >= 0 && index < resumes.length)) throw new Error(`Gemini picked resume ${parsed.resume} of ${resumes.length}`);
+  return { index, reason: String(parsed.reason ?? '').slice(0, 200), model: raw.model };
 }

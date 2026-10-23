@@ -105,6 +105,8 @@ const messageSchema = new Schema(
     // No tracking pixel: for important one-to-one emails (clicks and replies still count).
     trackOpens: { type: Boolean, default: true },
     templateId: { type: Schema.Types.ObjectId, ref: 'Template' },
+    // Which of your resumes this email carries (Insights compares them).
+    resumeId: { type: Schema.Types.ObjectId, ref: 'Resume' },
     // scheduled → sending → sent; or failed / cancelled. Old messages have no status (= sent).
     status: { type: String, enum: ['scheduled', 'sending', 'sent', 'failed', 'cancelled'], default: 'sent' },
     scheduledAt: Date,
@@ -244,6 +246,21 @@ const templateSchema = new Schema(
   { timestamps: true },
 );
 
+// A resume version (AI, full-stack, ...): a Google Drive/Docs link sent as is,
+// plus its text, read once, so Gemini can pick the best one for a job.
+const resumeSchema = new Schema(
+  {
+    name: { type: String, required: true, trim: true },
+    url: { type: String, required: true, trim: true },
+    text: { type: String, default: '' },
+    pages: { type: Number, default: 0 },
+    // Why the text couldn't be read (sharing, not a PDF...). Empty when it was.
+    readError: { type: String, default: '' },
+    readAt: Date,
+  },
+  { timestamps: true },
+);
+
 const settingSchema = new Schema({
   key: { type: String, required: true },
   value: Schema.Types.Mixed,
@@ -256,6 +273,7 @@ export type Message = InferSchemaType<typeof messageSchema> & Owned;
 export type TrackEvent = InferSchemaType<typeof eventSchema> & Owned;
 export type Application = InferSchemaType<typeof applicationSchema> & Owned;
 export type Contact = InferSchemaType<typeof contactSchema2> & Owned;
+export type Resume = InferSchemaType<typeof resumeSchema> & Owned;
 
 // People you've let in (besides the owner, ALLOWED_EMAIL). Not per-user data.
 const inviteSchema = new Schema(
@@ -265,7 +283,7 @@ const inviteSchema = new Schema(
 
 // Everything below holds one person's data: the tenancy plugin scopes every
 // query to the current user (src/server/context.ts).
-for (const schema of [messageSchema, eventSchema, settingSchema, applicationSchema, templateSchema, contactSchema2]) schema.plugin(tenancy);
+for (const schema of [messageSchema, eventSchema, settingSchema, applicationSchema, templateSchema, contactSchema2, resumeSchema]) schema.plugin(tenancy);
 settingSchema.index({ userId: 1, key: 1 }, { unique: true });
 templateSchema.index({ userId: 1, name: 1 });
 
@@ -277,3 +295,4 @@ export const SettingModel = mongoose.model('Setting', settingSchema);
 export const ApplicationModel = mongoose.model('Application', applicationSchema);
 export const TemplateModel = mongoose.model('Template', templateSchema);
 export const ContactModel = mongoose.model('Contact', contactSchema2);
+export const ResumeModel = mongoose.model('Resume', resumeSchema);

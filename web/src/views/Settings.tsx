@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { api, type Me, type SavedLink, type Template } from '../api';
 import { Toast } from '../components';
 import { Invites } from './Invites';
+import { Resumes } from './Resumes';
 
 export function Settings({ me, onSaved }: { me: Me; onSaved: () => void }) {
   const [fromName, setFromName] = useState(me.fromName || me.name);
@@ -252,6 +253,8 @@ export function Settings({ me, onSaved }: { me: Me; onSaved: () => void }) {
         </label>
         <p className="small muted">Gemini is told never to invent achievements, so anything you want it to mention belongs here or in the draft.</p>
       </section>
+
+      <Resumes onToast={setToast} />
 
       <section className="card form">
         <h2>Saved links</h2>

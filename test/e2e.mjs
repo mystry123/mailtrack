@@ -472,6 +472,68 @@ async function main() {
     await get(`/api/contacts/${c._id}`, { expect: [404] });
   });
 
+  console.log('\nResumes');
+  const AI_URL = 'https://drive.google.com/file/d/AIresume12345/view';
+  const VOICE_URL = 'https://drive.google.com/file/d/VOICEresume123/view';
+  const DOC_URL = 'https://docs.google.com/document/d/BACKENDdoc12345/edit';
+  await db.collection('fake_resumes').insertMany([
+    { url: AI_URL, text: 'AI engineer: LLM agents, LoRA fine-tuning, video generation models' },
+    { url: VOICE_URL, text: 'Voice AI engineer: TTS, ASR, voice cloning, dubbing in Indian languages' },
+  ]);
+  await step('add resumes from Drive; an unshared one says why; other links are refused', async () => {
+    const ai = (await post('/api/resumes', { name: 'AI Engineer', url: AI_URL })).data.resume;
+    assert.equal(ai.readError, '');
+    assert.equal(ai.chars > 10, true);
+    assert.equal(ai.text, undefined, 'text stays on the server');
+    ids.resumeVoice = (await post('/api/resumes', { name: 'Voice AI', url: VOICE_URL })).data.resume._id;
+    const doc = (await post('/api/resumes', { name: 'Backend', url: DOC_URL })).data.resume;
+    assert.match(doc.readError, /Anyone with the link/);
+    ids.resumeDoc = doc._id;
+    await post('/api/resumes', { name: 'Elsewhere', url: 'https://example.com/cv.pdf' }, { expect: [400] });
+    await post('/api/resumes', { name: '', url: AI_URL }, { expect: [400] });
+    const list = (await get('/api/resumes')).data.resumes;
+    assert.deepEqual(list.map((r) => r.name), ['AI Engineer', 'Voice AI', 'Backend']);
+    assert.ok(list.every((r) => r.text === undefined));
+  });
+  await step('reading again picks up a file that is now shared', async () => {
+    await db.collection('fake_resumes').insertOne({ url: DOC_URL, text: 'Backend engineer: Node.js, Redis, SQS, Postgres, APIs' });
+    const r = (await post(`/api/resumes/${ids.resumeDoc}/read`)).data.resume;
+    assert.equal(r.readError, '');
+  });
+  await step('suggests the resume that fits the job, with a reason', async () => {
+    const { pick } = (await post('/api/resumes/pick', { company: 'Vox', role: 'Voice AI Engineer: TTS and voice cloning' })).data;
+    assert.equal(pick.resumeId, ids.resumeVoice);
+    assert.equal(pick.by, 'gemini');
+    assert.match(pick.reason, /tts|voice/i);
+    const backend = (await post('/api/resumes/pick', { role: 'Backend Engineer', jobDescription: 'Node.js, Redis, SQS and Postgres APIs' })).data.pick;
+    assert.equal(backend.resumeId, ids.resumeDoc);
+    assert.equal((await post('/api/resumes/pick', {})).data.pick, null, 'nothing to go on');
+  });
+  await step('the email records its resume, links straight to Drive, and Insights compares', async () => {
+    const { data } = await post('/api/messages/send', {
+      to: [{ email: 'maya@vox.example' }],
+      subject: 'Voice AI Engineer',
+      body: `Hi Maya,\n\n**Resume:** [View Resume](${VOICE_URL})\n\nThanks,\nRitik`,
+      newApplication: { company: 'Vox', role: 'Voice AI Engineer', source: 'cold_email' },
+      resumeId: ids.resumeVoice,
+      includeSignature: false,
+    });
+    const box = await outbox();
+    assert.ok(decoded(box.at(-1).raw).includes(`href="${VOICE_URL}"`), 'Drive link goes out as is');
+    const m = (await get(`/api/messages/${data.message._id}`)).data.message;
+    assert.equal(m.resumeId, ids.resumeVoice);
+    assert.equal(m.links.length, 0, 'no tracked redirect for it');
+    const i = (await get('/api/insights')).data;
+    assert.deepEqual(i.byResume.map((r) => [r.name, r.sent]), [['Voice AI', 1]]);
+  });
+  await step('rename and remove a resume', async () => {
+    const r = (await call('PATCH', `/api/resumes/${ids.resumeDoc}`, { name: 'Backend (Node)' })).data.resume;
+    assert.equal(r.name, 'Backend (Node)');
+    await call('PATCH', `/api/resumes/${ids.resumeDoc}`, { url: 'https://example.com/x' }, { expect: [400] });
+    await call('DELETE', `/api/resumes/${ids.resumeDoc}`);
+    assert.equal((await get('/api/resumes')).data.resumes.length, 2);
+  });
+
   console.log('\nMulti-user: invites and isolation');
   const FRIEND = 'friend@example.com';
   const friendId = (await db.collection('accounts').insertOne({
@@ -554,6 +616,12 @@ async function main() {
   await step('background jobs run for each person separately', async () => {
     const r = (await jobs({ only: ['replies'] })).data;
     assert.equal(typeof r.replies, 'number');
+  });
+  await step('resumes are per person', async () => {
+    assert.equal((await get('/api/resumes', F)).data.resumes.length, 0);
+    await call('PATCH', `/api/resumes/${ids.resumeVoice}`, { name: 'Mine now' }, { ...F, expect: [404] });
+    await call('POST', `/api/resumes/${ids.resumeVoice}/read`, undefined, { ...F, expect: [404] });
+    assert.equal((await post('/api/resumes/pick', { role: 'Voice AI' }, F)).data.pick, null);
   });
   await step('removing the invite locks them out', async () => {
     await call('DELETE', `/api/invites/${ids.invite}`);

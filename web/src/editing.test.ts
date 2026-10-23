@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { insertBlock, link, prefixLines, wrap } from './editing';
+import { insertBlock, link, prefixLines, swapResume, wrap } from './editing';
 
 describe('toolbar edits', () => {
   it('wraps and unwraps a selection', () => {
@@ -34,5 +34,21 @@ describe('toolbar edits', () => {
 
   it('inserts a block on its own lines', () => {
     expect(insertBlock('above\nbelow', 5, 5, '---').value).toBe('above\n\n---\n\nbelow');
+  });
+});
+
+describe('swapResume', () => {
+  const ai = 'https://drive.google.com/file/d/AI/view';
+  const fs = 'https://drive.google.com/file/d/FS/view';
+  it('swaps one resume link for another', () => {
+    expect(swapResume(`Hi,\n\n**Resume:** [View Resume](${ai})\n\nThanks,\nRitik`, [ai, fs], fs)).toBe(`Hi,\n\n**Resume:** [View Resume](${fs})\n\nThanks,\nRitik`);
+  });
+  it('adds a Resume line above the sign-off', () => {
+    expect(swapResume('Hi Jane,\n\nLet’s chat.\n\nThanks,\nRitik', [ai, fs], ai)).toBe(`Hi Jane,\n\nLet’s chat.\n\n**Resume:** [View Resume](${ai})\n\nThanks,\nRitik`);
+  });
+  it('appends when there is no sign-off, and leaves a body that has it alone', () => {
+    expect(swapResume('Hi Jane', [ai], ai)).toBe(`Hi Jane\n\n**Resume:** [View Resume](${ai})`);
+    expect(swapResume('', [ai], ai)).toBe(`**Resume:** [View Resume](${ai})`);
+    expect(swapResume(`See ${ai}`, [ai], ai)).toBe(`See ${ai}`);
   });
 });

@@ -266,6 +266,7 @@ export interface Insights {
   funnel: { stage: Stage; label: string; count: number }[];
   bySource: { source: Source; started: number; replied: number; interviewing: number }[];
   byTemplate: { name: string; sent: number; replied: number; clicked: number }[];
+  byResume: { name: string; sent: number; replied: number; clicked: number }[];
   byLink: { label: string; sent: number; replied: number; clicked: number; linkClicks: number }[];
   bySubject: { subject: string; sent: number; replied: number; clicked: number }[];
   sequences: { sent: number; replies: number };
@@ -273,6 +274,22 @@ export interface Insights {
   engagement: { type: 'open' | 'click' | 'reply'; at: string }[];
   started: string[];
   closed: { rejected: number; ghosted: number; withdrawn: number; accepted: number };
+}
+
+export interface Resume {
+  _id: string;
+  name: string;
+  url: string;
+  pages: number;
+  readError: string;
+  readAt?: string;
+  chars?: number;
+}
+
+export interface ResumePick {
+  resumeId: string;
+  reason: string;
+  by: 'gemini' | 'keywords' | 'only';
 }
 
 export interface Template {

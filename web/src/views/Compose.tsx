@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { lintEmail } from '../../../src/shared/lint';
 import { isDirectLink, renderBody, withSignature } from '../../../src/shared/render';
-import { api, type Application, type EnhanceResult, type Me, type Message, type SavedLink, type Template } from '../api';
+import { api, type Application, type EnhanceResult, type Me, type Message, type Resume, type ResumePick, type SavedLink, type Template } from '../api';
 import { AppPicker, Modal, StageBadge, type PickedApp } from '../components';
-import { insertBlock, insertText, link, prefixLines, wrap, type TextEdit } from '../editing';
+import { insertBlock, insertText, link, prefixLines, swapResume, wrap, type TextEdit } from '../editing';
 import { ago, parseAddresses } from '../format';
 import { Icon } from '../icons';
 import { go } from '../nav';
@@ -96,12 +96,15 @@ export function Compose({ me, params }: { me: Me; params: URLSearchParams }) {
   const [schedule, setSchedule] = useState<{ on: boolean; local: string; tz: string }>({ on: false, local: presets()[0].value, tz: '' });
   const [dups, setDups] = useState<DupCheck | null>(null);
   const [saveAs, setSaveAs] = useState<string | null>(null);
+  const [resumes, setResumes] = useState<Resume[]>([]);
+  const [suggested, setSuggested] = useState<{ busy: boolean; pick: ResumePick | null }>({ busy: false, pick: null });
   const bodyRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     api<{ links: SavedLink[] }>('/api/saved-links').then((r) => setSaved(r.links)).catch(() => undefined);
     api<{ applications: Application[] }>('/api/applications').then((r) => setApps(r.applications)).catch(() => undefined);
     api<{ templates: Template[] }>('/api/templates').then((r) => setTemplates(r.templates)).catch(() => undefined);
+    api<{ resumes: Resume[] }>('/api/resumes').then((r) => setResumes(r.resumes)).catch(() => undefined);
   }, []);
 
   // Prefill from a follow-up or "send again".
@@ -167,6 +170,39 @@ export function Compose({ me, params }: { me: Me; params: URLSearchParams }) {
   const to = parseAddresses(draft.to);
   const cc = parseAddresses(draft.cc);
   const linkedApp = draft.app.applicationId ? apps.find((a) => a._id === draft.app.applicationId) : undefined;
+
+  // Which of your resumes this email carries, and which one fits the job.
+  const resumeInBody = resumes.find((r) => draft.body.includes(r.url));
+  const newRole = draft.app.newApplication?.role ?? '';
+  const newCompany = draft.app.newApplication?.company ?? '';
+  useEffect(() => {
+    if (followUp || resumes.length < 2 || (!draft.app.applicationId && !newRole.trim())) return setSuggested({ busy: false, pick: null });
+    let live = true;
+    const t = setTimeout(() => {
+      setSuggested({ busy: true, pick: null });
+      api<{ pick: ResumePick | null }>('/api/resumes/pick', {
+        method: 'POST',
+        body: draft.app.applicationId ? { applicationId: draft.app.applicationId } : { company: newCompany, role: newRole },
+      })
+        .then((r) => live && setSuggested({ busy: false, pick: r.pick }))
+        .catch(() => live && setSuggested({ busy: false, pick: null }));
+    }, 700);
+    return () => {
+      live = false;
+      clearTimeout(t);
+    };
+  }, [draft.app.applicationId, newRole, newCompany, resumes.length, followUp]);
+
+  const chooseResume = (r: Resume) =>
+    setDraft((d) => ({
+      ...d,
+      body: swapResume(
+        d.body,
+        resumes.map((x) => x.url),
+        r.url,
+      ),
+    }));
+  const suggestedResume = resumes.find((r) => r._id === suggested.pick?.resumeId);
 
   // Warn before contacting someone (or a company) twice. Not for follow-ups: that's the point.
   const toKey = to.ok.map((r) => r.email.toLowerCase()).join(',');
@@ -303,6 +339,7 @@ export function Compose({ me, params }: { me: Me; params: URLSearchParams }) {
           scheduledAt: scheduledAt?.toISOString(),
           trackOpens,
           templateId,
+          resumeId: resumeInBody?._id,
           sequenceDays: !followUp && sequence.on ? sequence.days : undefined,
           thankYouFor: thankYouApp && thankYouKey ? { applicationId: thankYouApp, key: thankYouKey } : undefined,
         },
@@ -382,6 +419,37 @@ export function Compose({ me, params }: { me: Me; params: URLSearchParams }) {
             <div className="linked small muted">
               Linked to <a href={`#/a/${linkedApp._id}`}>{linkedApp.company}</a> <StageBadge stage={linkedApp.stage} />
               {!followUp && linkedApp.stage === 'wishlist' && ' · moves to Reached out when sent'}
+            </div>
+          )}
+
+          {resumes.length > 0 && !followUp && (
+            <div className="resume-row">
+              <span className="small muted">Resume</span>
+              <div className="chips">
+                {resumes.map((r) => (
+                  <button
+                    key={r._id}
+                    type="button"
+                    className={resumeInBody?._id === r._id ? 'chip on' : 'chip'}
+                    title={r.readError ? `Couldn’t read it: ${r.readError}` : r.url}
+                    onClick={() => chooseResume(r)}
+                  >
+                    {r.name}
+                    {suggestedResume?._id === r._id && <span className="suggest-star" aria-label="suggested"> ★</span>}
+                  </button>
+                ))}
+              </div>
+              <span className="small muted resume-why">
+                {suggested.busy
+                  ? 'Finding the best fit…'
+                  : suggestedResume
+                    ? resumeInBody?._id === suggestedResume._id
+                      ? `Best fit: ${suggested.pick!.reason}`
+                      : `★ ${suggestedResume.name} fits best: ${suggested.pick!.reason}`
+                    : resumes.length > 1 && !draft.app.applicationId && !newRole.trim()
+                      ? 'Pick a company with a role to get a suggestion'
+                      : ''}
+              </span>
             </div>
           )}
 

@@ -245,6 +245,7 @@ const sendSchema = z.object({
   followUpOf: objectId.optional(),
   trackOpens: z.boolean().default(true),
   templateId: objectId.optional(),
+  resumeId: objectId.optional(),
   sequenceDays: z.array(z.number().int().min(1).max(60)).max(3).optional(),
   // A thank-you for this interview: marks it done once sent.
   thankYouFor: z.object({ applicationId: objectId, key: z.string().min(1).max(200) }).optional(),

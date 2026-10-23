@@ -34,6 +34,7 @@ export interface ComposeInput {
   scheduledAt?: Date;
   trackOpens?: boolean;
   templateId?: Types.ObjectId | string;
+  resumeId?: Types.ObjectId | string;
   // Working days after sending for automatic follow-ups (first emails only).
   sequenceDays?: number[];
   automatic?: boolean;
@@ -96,6 +97,7 @@ export async function createEmail(input: ComposeInput): Promise<MessageDoc> {
     sentAt: input.scheduledAt ?? new Date(),
     trackOpens: input.trackOpens ?? true,
     templateId: input.templateId,
+    resumeId: input.resumeId,
     // Steps get real due dates once it's actually sent.
     sequence: days ? { status: 'active', steps: days.map((d) => ({ afterDays: d, dueAt: new Date(8.64e15), status: 'pending' })) } : undefined,
   });

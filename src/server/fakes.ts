@@ -5,6 +5,7 @@
 
 import { randomBytes } from 'node:crypto';
 import mongoose from 'mongoose';
+import { bestByKeywords } from '../shared/keywords.js';
 
 const col = (name: string) => mongoose.connection.db!.collection(name);
 const id = () => randomBytes(8).toString('hex');
@@ -40,6 +41,12 @@ export const fakeGoogle = {
   async text(gmailId: string) {
     const t = await col('fake_threads').findOne({ 'messages.id': gmailId });
     return ((t?.messages ?? []) as FakeThreadMessage[]).find((m) => m.id === gmailId)?.text ?? '';
+  },
+  // A Drive/Docs resume: tests store its text in fake_resumes by URL.
+  async resumeText(url: string) {
+    const r = await col('fake_resumes').findOne({ url });
+    if (!r) throw new Error('Drive wouldn’t share this file');
+    return String(r.text);
   },
   async events(from: Date, to: Date) {
     const rows = await col('fake_calendar').find({ start: { $gte: from, $lte: to } }).toArray();
@@ -83,6 +90,12 @@ export function fakeAi(kind: string, prompt: string): string {
       return JSON.stringify({ items: ['Fake prep item one', 'Fake prep item two', 'Fake prep item three'] });
     case 'people':
       return JSON.stringify({ people: [{ name: 'Jane Founder', title: 'CEO & Co-founder' }] });
+    case 'resume': {
+      const [job, ...blocks] = prompt.split(/\n### Resume \d+: /);
+      const resumes = blocks.map((b) => ({ name: b.split('\n')[0], text: b }));
+      const { index, matched } = bestByKeywords(job, resumes);
+      return JSON.stringify({ resume: index + 1, reason: `Fake pick: matches ${matched.join(', ')}` });
+    }
     case 'brief':
       return '**What they do**\nFake brief.';
     default:

@@ -69,3 +69,19 @@ export function insertText(value: string, start: number, end: number, text: stri
   const out = value.slice(0, start) + text + value.slice(end);
   return { value: out, start: start + text.length, end: start + text.length };
 }
+
+const SIGN_OFF = /^(thanks|thank you|best|regards|cheers|warmly|sincerely)\b/i;
+
+// Puts this resume link in the email: swaps any of your other resume links for
+// it, or adds a "Resume:" line above the sign-off (or at the end).
+export function swapResume(body: string, resumeUrls: string[], url: string): string {
+  const present = resumeUrls.filter((u) => u !== url && body.includes(u));
+  if (present.length) return present.reduce((b, u) => b.split(u).join(url), body);
+  if (body.includes(url)) return body;
+  const line = `**Resume:** [View Resume](${url})`;
+  const lines = body.replace(/\s+$/, '').split('\n');
+  let at = lines.length - 1;
+  while (at >= 0 && !SIGN_OFF.test(lines[at].trim())) at--;
+  if (at <= 0) return `${lines.join('\n')}${lines.join('').trim() ? '\n\n' : ''}${line}`;
+  return [...lines.slice(0, at), ...(lines[at - 1].trim() ? [''] : []), line, '', ...lines.slice(at)].join('\n');
+}

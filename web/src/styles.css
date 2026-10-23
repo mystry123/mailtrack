@@ -2672,3 +2672,22 @@ a.task-title:hover {
     grid-template-columns: 1fr;
   }
 }
+.resume-row {
+  display: flex;
+  align-items: center;
+  gap: 8px 10px;
+  flex-wrap: wrap;
+  margin: -4px 0 14px;
+}
+.resume-row .chip {
+  height: 28px;
+}
+.resume-why {
+  flex-basis: 100%;
+}
+.suggest-star {
+  color: var(--amber);
+}
+.chip.on .suggest-star {
+  color: inherit;
+}
